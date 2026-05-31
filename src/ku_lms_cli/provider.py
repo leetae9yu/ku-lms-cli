@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from .domain import Assignment, Course, Material, Recording
+from .domain import Assignment, CalendarEvent, Course, Material, Recording
 from .paths import PathPolicy
 from .redaction import redact_text
 
@@ -38,6 +38,16 @@ class FixtureProvider:
             "recordings": [
                 {"id": "sample-recording", "course_id": "sample-course", "title": "Sample Recording", "url": "https://mylms.korea.ac.kr/recordings/sample", "duration": "00:10:00"}
             ],
+            "calendar_events": [
+                {
+                    "id": "sample-calendar-event",
+                    "title": "Sample Assignment",
+                    "date": "2099-12-31T23:59:00+09:00",
+                    "due_at": "2099-12-31T23:59:00+09:00",
+                    "type": "assignment",
+                    "course": "Sample Course",
+                }
+            ],
         }
 
     def courses(self) -> list[Course]:
@@ -55,6 +65,25 @@ class FixtureProvider:
 
     def recordings(self) -> list[Recording]:
         return [Recording(**item) for item in self._data.get("recordings", [])]
+
+    def calendar_events(self) -> list[CalendarEvent]:
+        return [CalendarEvent(**item) for item in self._data.get("calendar_events", [])]
+
+    def calendar_upcoming(self) -> list[CalendarEvent]:
+        return self.calendar_events()
+
+    def calendar_todo(self) -> list[CalendarEvent]:
+        return self.calendar_events()
+
+    def calendar_feed(self, delivery: str = "inspect") -> dict[str, str | bool]:
+        return {
+            "delivery": delivery,
+            "copied": False,
+            "opened": False,
+            "url_shape": "https://mylms.korea.ac.kr/feeds/calendars/[REDACTED-FEED-TOKEN].ics",
+            "raw_url_printed": False,
+            "implementation": "live-only",
+        }
 
     def download_material(self, material_id: str, policy: PathPolicy) -> Path:
         material = _find(self.materials(), material_id)

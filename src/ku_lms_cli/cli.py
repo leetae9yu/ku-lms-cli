@@ -50,6 +50,14 @@ def build_parser() -> argparse.ArgumentParser:
     recordings.add_argument("--title", default="", help="Recording title/module substring for live playback")
     recordings.add_argument("--until-end", action="store_true", help="Play a recording until completion is observed in live mode")
     recordings.add_argument("--seconds", type=float, default=None, help="Playback/keepalive duration in seconds for live mode")
+    calendar = sub.add_parser("calendar", help="List calendar events, todo items, and safely handle the calendar feed")
+    calendar.add_argument("action", nargs="?", choices=["upcoming", "list", "todo", "feed"], default="upcoming")
+    calendar.add_argument("--from", dest="from_date", default="", help="Start date for live calendar queries, e.g. 2026-05-31")
+    calendar.add_argument("--to", dest="to_date", default="", help="End date for live calendar queries, e.g. 2026-06-30")
+    calendar.add_argument("--course", default="", help="Course name substring for live calendar event filtering")
+    calendar.add_argument("--copy", action="store_true", help="Copy the raw .ics calendar feed URL to the local clipboard without printing it")
+    calendar.add_argument("--open", action="store_true", help="Open the raw .ics calendar feed URL in the local default browser without printing it")
+    calendar.add_argument("--open-google", action="store_true", help="Open Google Calendar's add-by-URL screen for the feed without printing the feed URL")
     return parser
 
 
@@ -165,6 +173,24 @@ def run(argv: list[str] | None = None, live_provider_factory: Any | None = None)
                 return _emit({"ok": False, "error": "recording not found", "id": args.item_id, "exit_code": 1}, args.json)
             return _emit({"ok": True, "playback": plan}, args.json)
         return _emit({"ok": True, "recordings": to_dicts(provider.recordings())}, args.json)
+    if args.command == "calendar":
+        try:
+            if args.action == "feed":
+                delivery = "open_google" if args.open_google else "open" if args.open else "copy" if args.copy else "inspect"
+                return _emit({"ok": True, "feed": provider.calendar_feed(delivery)}, args.json)
+            if live_mode:
+                if args.action == "todo":
+                    return _emit({"ok": True, "todo": provider.calendar_todo()}, args.json)
+                if args.action == "list":
+                    return _emit({"ok": True, "events": provider.calendar_events(args.from_date, args.to_date, args.course)}, args.json)
+                return _emit({"ok": True, "upcoming": provider.calendar_upcoming(args.from_date, args.to_date)}, args.json)
+            if args.action == "todo":
+                return _emit({"ok": True, "todo": to_dicts(provider.calendar_todo())}, args.json)
+            if args.action == "list":
+                return _emit({"ok": True, "events": to_dicts(provider.calendar_events())}, args.json)
+            return _emit({"ok": True, "upcoming": to_dicts(provider.calendar_upcoming())}, args.json)
+        except LiveCommandError as exc:
+            return _emit({"ok": False, "error": str(exc), "exit_code": 1}, args.json)
     return _emit({"ok": False, "command": args.command, "error": "unknown command", "exit_code": 3}, args.json)
 
 

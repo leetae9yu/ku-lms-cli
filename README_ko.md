@@ -125,6 +125,23 @@ ku-lms --json --live recordings play --course "국제법" --title "1차시" --un
 ku-lms --json --live recordings keepalive --course "국제법" --title "1차시" --seconds 30
 ```
 
+캘린더/upcoming/todo 조회:
+
+```bash
+ku-lms --json --live calendar upcoming
+ku-lms --json --live calendar list --from 2026-05-31 --to 2026-06-30 --course "국제법"
+ku-lms --json --live calendar todo
+```
+
+캘린더 피드 연동:
+
+```bash
+ku-lms --json --live calendar feed --copy
+ku-lms --json --live calendar feed --open-google
+```
+
+`calendar feed`의 실제 `.ics` URL은 구독 토큰이므로 터미널에 출력하지 않습니다. `--copy`, `--open`, `--open-google`은 로컬 클립보드/브라우저로만 전달합니다.
+
 브라우저 창을 직접 보고 싶으면:
 
 ```bash
@@ -159,6 +176,8 @@ ku-lms --json recordings keepalive --id sample-recording
 - 과목별 과제/마감일 조회
 - 과목별 녹화 강의 목록 조회
 - 녹화 강의 재생/keepalive
+- 캘린더 upcoming/list/todo 조회
+- 캘린더 `.ics` feed를 안전하게 클립보드/브라우저/Google Calendar로 전달
 
 옵션:
 
@@ -176,6 +195,8 @@ ku-lms --json recordings keepalive --id sample-recording
 - 읽기 전용 조회
 - 자료 다운로드 scaffold
 - 녹화 강의 재생/keepalive
+- 캘린더 upcoming/list/todo 조회
+- 캘린더 `.ics` feed를 안전하게 클립보드/브라우저/Google Calendar로 전달
 - 녹화 재생으로 인한 시청기록/진도/출석 체크 반영
 
 금지:
@@ -200,6 +221,8 @@ live 출력에는 다음 정도만 포함되도록 제한합니다.
 - 과목명
 - 과제명, 마감일, 제출 상태 요약
 - 녹화 강의 모듈/제목
+- 캘린더 일정 제목/날짜
+- redacted 캘린더 feed URL shape
 - 재생 상태 요약
 
 출력하지 않아야 하는 것:
@@ -210,6 +233,7 @@ live 출력에는 다음 정도만 포함되도록 제한합니다.
 - OAuth/SAML/LTI 파라미터
 - raw course id
 - raw launch URL
+- raw calendar `.ics` feed URL
 - 이메일 등 민감 식별자
 
 ## Chrome / 브라우저 설정

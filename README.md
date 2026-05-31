@@ -104,6 +104,9 @@ PYTHONPATH=src python -m ku_lms_cli.cli --json --live courses
 PYTHONPATH=src python -m ku_lms_cli.cli --json --live assignments deadlines --course "국제법"
 PYTHONPATH=src python -m ku_lms_cli.cli --json --live recordings list --course "국제법"
 PYTHONPATH=src python -m ku_lms_cli.cli --json --live recordings play --course "국제법" --title "1차시" --until-end
+PYTHONPATH=src python -m ku_lms_cli.cli --json --live calendar upcoming
+PYTHONPATH=src python -m ku_lms_cli.cli --json --live calendar list --from 2026-05-31 --to 2026-06-30 --course "국제법"
+PYTHONPATH=src python -m ku_lms_cli.cli --json --live calendar feed --copy
 ```
 
 Installed script after package installation:
@@ -119,6 +122,7 @@ ku-lms --json status
 - `materials list` / `materials download`
 - `assignments list` / `assignments deadlines` / attachment download
 - `recordings list` / `recordings play` / `recordings keepalive`
+- `calendar upcoming` / `calendar list` / `calendar todo` / `calendar feed --copy|--open|--open-google`
 
 ## Forbidden by design
 
@@ -126,7 +130,9 @@ Commands such as `submit`, `upload`, `post`, `comment`, `delete`, `edit`, and ot
 
 ## Live mode
 
-`--live` uses a temporary local Chrome/CDP session and Canvas read-only endpoints where available. Fixture mode remains the default. Live outputs are intentionally shape-limited: course names, assignment titles/deadlines, recording titles/modules, and playback status may be printed; raw IDs, launch URLs, cookies, headers, OAuth/SAML/LTI params, emails, credentials, and tokens must not be printed or persisted. See `docs/live.md`.
+`--live` uses a temporary local Chrome/CDP session and Canvas read-only endpoints where available. Fixture mode remains the default. Live outputs are intentionally shape-limited: course names, assignment titles/deadlines, calendar event titles/dates, recording titles/modules, and playback status may be printed; raw IDs, launch URLs, calendar feed URLs, cookies, headers, OAuth/SAML/LTI params, emails, credentials, and tokens must not be printed or persisted. See `docs/live.md`.
+
+Calendar feed integration uses the LMS iCalendar feed. The raw `.ics` URL is secret-like, so `calendar feed` returns only a redacted shape. Use `--copy`, `--open`, or `--open-google` to pass the feed to the local clipboard/browser without printing it.
 
 ## DevTools discovery
 

@@ -1,6 +1,6 @@
 ---
 name: ku-lms
-description: "Use when Codex should use the installed `ku-lms` CLI for Korea University LMS tasks: listing courses, checking assignments/deadlines, summarizing remaining work, listing recorded lectures, or playing/keeping alive recorded lectures. Also use when a user asks natural-language LMS questions such as 공학수학 과제 확인, 국제법 영상 목록, 남은 과제 뭐 있어, or 녹화 강의 틀어줘. Do not use for assignment submission, uploads, comments, edits, deletes, enrollment changes, or any LMS-mutating action."
+description: "Use when Codex should use the installed `ku-lms` CLI for Korea University LMS tasks: listing courses, checking assignments/deadlines, summarizing remaining work, listing calendar events/todos, safely copying/opening the calendar feed, listing recorded lectures, or playing/keeping alive recorded lectures. Also use when a user asks natural-language LMS questions such as 공학수학 과제 확인, 국제법 영상 목록, 남은 과제 뭐 있어, or 녹화 강의 틀어줘. Do not use for assignment submission, uploads, comments, edits, deletes, enrollment changes, or any LMS-mutating action."
 ---
 
 # KU LMS CLI
@@ -35,7 +35,7 @@ If config is missing, tell the user to create `~/.config/ku-lms-cli/KU_LMS.env` 
 
 ## Workflow
 
-1. Identify intent: courses, assignments/deadlines, recordings list, playback/keepalive, or status.
+1. Identify intent: courses, assignments/deadlines, calendar upcoming/todo/feed, recordings list, playback/keepalive, or status.
 2. Choose the narrowest CLI command.
 3. Run with `--json --live` for real LMS data unless the user explicitly wants fixture/sample mode.
 4. Read the JSON and summarize the relevant fields; do not dump raw JSON unless requested.
@@ -56,6 +56,18 @@ Assignments for a course:
 ku-lms --json --live assignments list --course "공학수학"
 ku-lms --json --live assignments deadlines --course "공학수학"
 ```
+
+Calendar:
+
+```bash
+ku-lms --json --live calendar upcoming
+ku-lms --json --live calendar list --from 2026-05-31 --to 2026-06-30 --course "국제법"
+ku-lms --json --live calendar todo
+ku-lms --json --live calendar feed --copy
+ku-lms --json --live calendar feed --open-google
+```
+
+Never print the raw calendar `.ics` feed URL. Use `--copy`, `--open`, or `--open-google` only when the user explicitly asks to connect/copy/open the feed.
 
 Recordings for a course:
 
@@ -82,6 +94,9 @@ Use `--timeout 120` when live browser operations need more time. Use `--headful`
 - "과목 조회" → run courses and print course names.
 - "공학수학 과제 확인" → run assignments list for `공학수학`; summarize remaining/missing/unsubmitted first.
 - "국제법 과제 남은 거 있음?" → run assignments list for `국제법`; answer whether any `remaining_candidate` or missing/unsubmitted work exists.
+- "캘린더 일정 보여줘" → run calendar upcoming/list and summarize title/date/course.
+- "남은 할 일 보여줘" → run calendar todo.
+- "구글 캘린더 연동" or "캘린더 피드 복사" → run calendar feed with `--copy` or `--open-google`; do not print the raw feed URL.
 - "국제법 영상 목록" → run recordings list for `국제법`; print module/title list.
 - "국제법 1주차 4차시 끝까지 재생" → run recordings play with `--until-end` and summarize playback evidence.
 

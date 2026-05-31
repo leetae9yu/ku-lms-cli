@@ -50,7 +50,41 @@ class FakeSession:
                     ],
                 }
             ]
+        if path_or_url.startswith("/api/v1/calendar_events?"):
+            assert "context_codes%5B%5D=course_101" in path_or_url
+            return [
+                {
+                    "id": 11111111,
+                    "title": "퀴즈9차",
+                    "start_at": "2026-06-01T09:00:00Z",
+                    "end_at": "2026-06-01T10:00:00Z",
+                    "type": "assignment",
+                    "context_name": "국제법",
+                    "html_url": "https://mylms.korea.ac.kr/courses/101/assignments/11111111",
+                }
+            ]
+        if path_or_url.startswith("/api/v1/planner/items?"):
+            return [
+                {
+                    "context_name": "국제법",
+                    "plannable_date": "2026-06-01T09:00:00Z",
+                    "plannable_type": "assignment",
+                    "plannable": {"title": "퀴즈9차", "id": 11111111},
+                    "submissions": {"submitted": False},
+                }
+            ]
+        if path_or_url.startswith("/api/v1/users/self/todo?"):
+            return [
+                {
+                    "type": "submitting",
+                    "context_name": "국제법",
+                    "assignment": {"name": "퀴즈9차", "due_at": "2026-06-01T09:00:00Z", "id": 11111111},
+                }
+            ]
         raise AssertionError(path_or_url)
+
+    async def get_calendar_feed_url(self):
+        return "https://mylms.korea.ac.kr/feeds/calendars/" + "user_abc123TOKEN.ics"
 
     async def play_url(self, url, *, until_end=False, seconds=None):
         self.played_urls.append(url)
@@ -104,6 +138,48 @@ def test_live_playback_redacts_raw_playback_data():
     assert "raw_url" not in result
     assert "user_id" not in str(result)
     assert "12345678" not in str(result)
+
+
+def test_live_calendar_events_hide_ids_and_urls():
+    lms, _ = provider()
+    rows = lms.calendar_events("2026-05-31", "2026-06-30", "국제법")
+    assert rows == [
+        {
+            "title": "퀴즈9차",
+            "start_at": "2026-06-01T09:00:00Z",
+            "end_at": "2026-06-01T10:00:00Z",
+            "type": "assignment",
+            "context_name": "국제법",
+            "all_day": False,
+            "location_name": "",
+        }
+    ]
+    assert "11111111" not in str(rows)
+    assert "html_url" not in str(rows)
+
+
+def test_live_calendar_upcoming_todo_and_feed_are_safe(monkeypatch):
+    lms, _ = provider()
+    upcoming = lms.calendar_upcoming()
+    todo = lms.calendar_todo()
+    assert upcoming[0]["title"] == "퀴즈9차"
+    assert todo[0]["course"] == "국제법"
+
+    import ku_lms_cli.live as live_mod
+
+    copied = {}
+
+    def fake_copy(text):
+        copied["text"] = text
+        return True, "fake"
+
+    monkeypatch.setattr(live_mod, "_copy_to_clipboard", fake_copy)
+    feed = lms.calendar_feed("copy")
+    assert feed["copied"] is True
+    assert feed["raw_url_printed"] is False
+    assert feed["url_shape"] == "https://mylms.korea.ac.kr/feeds/calendars/[REDACTED-FEED-TOKEN].ics"
+    assert copied["text"].endswith(".ics")
+    assert "user_abc123TOKEN" not in str(feed)
 
 
 def test_ambiguous_or_missing_course_error_is_safe():

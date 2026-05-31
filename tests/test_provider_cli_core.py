@@ -77,6 +77,29 @@ class FakeLiveProvider:
         assert course == "국제법"
         return [{"module": "1주차", "title": "1주차 1차시", "type": "ExternalTool", "playable": True}]
 
+    def calendar_events(self, start_date="", end_date="", course=""):
+        assert start_date == "2026-05-31"
+        assert end_date == "2026-06-30"
+        assert course == "국제법"
+        return [{"title": "퀴즈9차", "start_at": "2026-06-01T09:00:00Z", "type": "assignment", "context_name": "국제법"}]
+
+    def calendar_upcoming(self, start_date="", end_date=""):
+        assert start_date == ""
+        assert end_date == ""
+        return [{"title": "기말 리포트", "date": "2099-06-01T00:00:00Z", "type": "assignment", "course": "국제법"}]
+
+    def calendar_todo(self):
+        return [{"title": "기말 리포트", "due_at": "2099-06-01T00:00:00Z", "type": "submitting", "course": "국제법"}]
+
+    def calendar_feed(self, delivery="inspect"):
+        return {
+            "delivery": delivery,
+            "copied": delivery == "copy",
+            "opened": delivery in {"open", "open_google"},
+            "url_shape": "https://mylms.korea.ac.kr/feeds/calendars/[REDACTED-FEED-TOKEN].ics",
+            "raw_url_printed": False,
+        }
+
     def play_recording(self, course, title, *, until_end=False, seconds=None):
         assert course == "국제법"
         assert "1차시" in title
@@ -128,3 +151,28 @@ def test_live_recording_list_and_play_cli(tmp_path, capsys):
     assert data["playback"]["completed"] is True
     assert data["playback"]["side_effects_accepted"] is True
     assert "url" not in json.dumps(data).lower()
+
+
+def test_fixture_calendar_commands_are_available(tmp_path, capsys):
+    env = write_env(tmp_path)
+    assert run(["--env-file", str(env), "--json", "calendar", "upcoming"]) == 0
+    data = parse_json_output(capsys)
+    assert data["upcoming"][0]["title"] == "Sample Assignment"
+    assert run(["--env-file", str(env), "--json", "calendar", "feed"]) == 0
+    data = parse_json_output(capsys)
+    assert data["feed"]["raw_url_printed"] is False
+    assert "user_" not in json.dumps(data)
+
+
+def test_live_calendar_cli_and_feed_do_not_print_raw_url(tmp_path, capsys):
+    env = write_env(tmp_path)
+    assert run(["--env-file", str(env), "--json", "--live", "calendar", "list", "--from", "2026-05-31", "--to", "2026-06-30", "--course", "국제법"], live_provider_factory=fake_live_factory) == 0
+    data = parse_json_output(capsys)
+    assert data["events"][0]["title"] == "퀴즈9차"
+    assert run(["--env-file", str(env), "--json", "--live", "calendar", "feed", "--copy"], live_provider_factory=fake_live_factory) == 0
+    data = parse_json_output(capsys)
+    text = json.dumps(data)
+    assert data["feed"]["copied"] is True
+    assert data["feed"]["raw_url_printed"] is False
+    assert "[REDACTED-FEED-TOKEN]" in text
+    assert "user_" not in text

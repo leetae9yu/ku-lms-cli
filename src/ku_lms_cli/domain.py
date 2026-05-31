@@ -39,5 +39,15 @@ class Recording:
     duration: str = ""
 
 
+@dataclass(frozen=True)
+class CalendarEvent:
+    id: str
+    title: str
+    date: str
+    type: str = "assignment"
+    course: str = ""
+    due_at: str = ""
+
+
 def to_dicts(items: list[Any]) -> list[dict[str, Any]]:
     return [asdict(item) for item in items]

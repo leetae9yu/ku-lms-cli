@@ -17,6 +17,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import webbrowser
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -51,6 +52,8 @@ class BrowserSession(Protocol):
 
     async def fetch_json(self, path_or_url: str) -> Any: ...
 
+    async def get_calendar_feed_url(self) -> str: ...
+
     async def play_url(self, url: str, *, until_end: bool = False, seconds: float | None = None) -> dict[str, Any]: ...
 
 
@@ -78,6 +81,18 @@ class LiveLmsProvider:
             for item in self.assignments(course)
         ]
 
+    def calendar_events(self, start_date: str = "", end_date: str = "", course: str = "") -> list[dict[str, Any]]:
+        return _run(self._calendar_events_async(start_date=start_date, end_date=end_date, course_query=course))
+
+    def calendar_upcoming(self, start_date: str = "", end_date: str = "") -> list[dict[str, Any]]:
+        return _run(self._calendar_upcoming_async(start_date=start_date, end_date=end_date))
+
+    def calendar_todo(self) -> list[dict[str, Any]]:
+        return _run(self._calendar_todo_async())
+
+    def calendar_feed(self, delivery: str = "inspect") -> dict[str, Any]:
+        return _run(self._calendar_feed_async(delivery=delivery))
+
     def recordings(self, course: str) -> list[dict[str, Any]]:
         return _run(self._recordings_async(course))
 
@@ -98,6 +113,67 @@ class LiveLmsProvider:
         if not isinstance(assignments, list):
             raise LiveCommandError("assignment API returned an unexpected shape")
         return [_public_assignment(item) for item in assignments if isinstance(item, dict)]
+
+    async def _calendar_events_async(self, start_date: str = "", end_date: str = "", course_query: str = "") -> list[dict[str, Any]]:
+        async with self._session_factory() as session:
+            await session.login()
+            params: dict[str, Any] = {"per_page": 100, "type": ["assignment", "event"]}
+            if start_date:
+                params["start_date"] = start_date
+            if end_date:
+                params["end_date"] = end_date
+            if course_query:
+                course = await _select_course(session, course_query)
+                params["context_codes[]"] = [f"course_{course['id']}"]
+            path = "/api/v1/calendar_events?" + urllib.parse.urlencode(params, doseq=True)
+            events = await session.fetch_json(path)
+        if not isinstance(events, list):
+            raise LiveCommandError("calendar events API returned an unexpected shape")
+        return [_public_calendar_event(item) for item in events if isinstance(item, dict)]
+
+    async def _calendar_upcoming_async(self, start_date: str = "", end_date: str = "") -> list[dict[str, Any]]:
+        async with self._session_factory() as session:
+            await session.login()
+            params: dict[str, Any] = {"per_page": 100}
+            if start_date:
+                params["start_date"] = start_date
+            if end_date:
+                params["end_date"] = end_date
+            items = await session.fetch_json("/api/v1/planner/items?" + urllib.parse.urlencode(params, doseq=True))
+        if not isinstance(items, list):
+            raise LiveCommandError("planner API returned an unexpected shape")
+        return [_public_planner_item(item) for item in items if isinstance(item, dict)]
+
+    async def _calendar_todo_async(self) -> list[dict[str, Any]]:
+        async with self._session_factory() as session:
+            await session.login()
+            items = await session.fetch_json("/api/v1/users/self/todo?per_page=100")
+        if not isinstance(items, list):
+            raise LiveCommandError("todo API returned an unexpected shape")
+        return [_public_todo_item(item) for item in items if isinstance(item, dict)]
+
+    async def _calendar_feed_async(self, delivery: str = "inspect") -> dict[str, Any]:
+        if delivery not in {"inspect", "copy", "open", "open_google"}:
+            raise LiveCommandError("unsupported calendar feed delivery")
+        async with self._session_factory() as session:
+            await session.login()
+            feed_url = await session.get_calendar_feed_url()
+        if not feed_url or not feed_url.endswith(".ics"):
+            raise LiveCommandError("calendar feed URL was not found")
+        url_shape = _feed_url_shape(feed_url)
+        if delivery == "copy":
+            copied, detail = _copy_to_clipboard(feed_url)
+            if not copied:
+                raise LiveCommandError(f"calendar feed URL was found but clipboard copy failed: {detail}")
+            return {"delivery": "copy", "copied": True, "opened": False, "url_shape": url_shape, "raw_url_printed": False}
+        if delivery == "open":
+            opened = webbrowser.open(feed_url)
+            return {"delivery": "open", "copied": False, "opened": bool(opened), "url_shape": url_shape, "raw_url_printed": False}
+        if delivery == "open_google":
+            google_url = "https://calendar.google.com/calendar/r?cid=" + urllib.parse.quote(feed_url, safe="")
+            opened = webbrowser.open(google_url)
+            return {"delivery": "open_google", "copied": False, "opened": bool(opened), "url_shape": url_shape, "raw_url_printed": False}
+        return {"delivery": "inspect", "copied": False, "opened": False, "url_shape": url_shape, "raw_url_printed": False}
 
     async def _recordings_async(self, course_query: str) -> list[dict[str, Any]]:
         async with self._session_factory() as session:
@@ -213,6 +289,42 @@ def _public_assignment(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _public_calendar_event(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "title": item.get("title") or item.get("name") or "",
+        "start_at": item.get("start_at") or item.get("all_day_date") or "",
+        "end_at": item.get("end_at") or "",
+        "type": item.get("type") or item.get("workflow_state") or "event",
+        "context_name": item.get("context_name") or item.get("effective_context_code") or "",
+        "all_day": bool(item.get("all_day", False)),
+        "location_name": item.get("location_name") or "",
+    }
+
+
+def _public_planner_item(item: dict[str, Any]) -> dict[str, Any]:
+    plannable = item.get("plannable") if isinstance(item.get("plannable"), dict) else {}
+    submissions = item.get("submissions") if isinstance(item.get("submissions"), dict) else {}
+    return {
+        "title": plannable.get("title") or plannable.get("name") or item.get("title") or "",
+        "date": item.get("plannable_date") or plannable.get("due_at") or "",
+        "type": item.get("plannable_type") or plannable.get("type") or "",
+        "course": item.get("context_name") or "",
+        "submitted": bool(submissions.get("submitted") or submissions.get("submitted_at")),
+        "new_activity": bool(item.get("new_activity", False)),
+    }
+
+
+def _public_todo_item(item: dict[str, Any]) -> dict[str, Any]:
+    assignment = item.get("assignment") if isinstance(item.get("assignment"), dict) else {}
+    return {
+        "title": assignment.get("name") or assignment.get("title") or item.get("type") or "",
+        "due_at": assignment.get("due_at") or "",
+        "type": item.get("type") or "",
+        "course": item.get("context_name") or "",
+        "ignore": bool(item.get("ignore", False)),
+    }
+
+
 def _public_recording(item: dict[str, Any]) -> dict[str, Any]:
     return {"module": item.get("module", ""), "title": item.get("title", ""), "type": item.get("type", ""), "playable": True}
 
@@ -263,6 +375,46 @@ def _looks_like_handout(title: str) -> bool:
 
 def _matches(query: str, value: str) -> bool:
     return query.strip().casefold() in value.strip().casefold()
+
+
+def _feed_url_shape(url: str) -> str:
+    parsed = urllib.parse.urlparse(url)
+    path = parsed.path
+    if "/feeds/calendars/" in path and path.endswith(".ics"):
+        path = "/feeds/calendars/[REDACTED-FEED-TOKEN].ics"
+    return urllib.parse.urlunparse((parsed.scheme, parsed.netloc, path, "", "", ""))
+
+
+def _copy_to_clipboard(text: str) -> tuple[bool, str]:
+    for command in [
+        ["pbcopy"],
+        ["wl-copy"],
+        ["xclip", "-selection", "clipboard"],
+        ["xsel", "--clipboard", "--input"],
+        ["clip.exe"],
+        ["powershell.exe", "-NoProfile", "-Command", "Set-Clipboard"],
+        ["termux-clipboard-set"],
+    ]:
+        if not shutil.which(command[0]):
+            continue
+        try:
+            subprocess.run(command, input=text, text=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5, check=True)
+            return True, command[0]
+        except (subprocess.SubprocessError, OSError):
+            continue
+    try:
+        import tkinter  # type: ignore
+
+        root = tkinter.Tk()
+        root.withdraw()
+        root.clipboard_clear()
+        root.clipboard_append(text)
+        root.update()
+        root.destroy()
+        return True, "tkinter"
+    except Exception:  # noqa: BLE001 - clipboard availability is platform/display dependent
+        pass
+    return False, "no supported clipboard command found"
 
 
 def _run(coro: Any) -> Any:
@@ -403,6 +555,36 @@ class CdpBrowserSession:
             """,
             timeout=min(self.options.timeout_seconds, 25),
         )
+
+    async def get_calendar_feed_url(self) -> str:
+        await self.goto(f"{CANVAS_ORIGIN}/calendar")
+        await asyncio.sleep(2.0)
+        clicked = await self.evaluate(
+            r"""
+            (() => {
+              const textOf = (el) => (el.innerText || el.textContent || el.value || el.getAttribute('aria-label') || el.title || '').trim().replace(/\s+/g, ' ');
+              const candidates = Array.from(document.querySelectorAll('button,a,input,[role="button"]'));
+              const target = candidates.find((el) => textOf(el) === '캘린더 피드' || /calendar feed/i.test(textOf(el)));
+              if (!target) return false;
+              target.click();
+              return true;
+            })()
+            """
+        )
+        if not clicked:
+            raise LiveCommandError("calendar feed button was not found")
+        await asyncio.sleep(1.0)
+        feed_url = await self.evaluate(
+            r"""
+            (() => {
+              const input = document.querySelector('#calendar-feed-url-input') || Array.from(document.querySelectorAll('input,textarea')).find((el) => String(el.value || '').includes('/feeds/calendars/') && String(el.value || '').endsWith('.ics'));
+              if (input && input.value) return input.value;
+              const link = Array.from(document.querySelectorAll('a')).find((el) => String(el.href || '').includes('/feeds/calendars/') && String(el.href || '').endsWith('.ics'));
+              return link ? link.href : '';
+            })()
+            """
+        )
+        return str(feed_url or "")
 
     async def _canvas_session_ready(self) -> bool:
         try:

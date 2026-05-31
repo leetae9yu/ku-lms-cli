@@ -42,6 +42,7 @@ _VALUE_PATTERNS = [
     re.compile(r"(?i)(cookie\s*[:=]\s*)([^\n;]+(?:;[^\n]+)?)"),
     re.compile(r"(?i)((?:session|sess)[-_]?(?:id|key)?\s*[:=]\s*)([A-Za-z0-9._~+/=-]{8,})"),
     re.compile(r"(?i)([?&](?:access[_-]?token|refresh[_-]?token|id[_-]?token|token|password|pwd|session|sid|SAMLResponse|SAMLRequest|RelayState|oauth[_-]?(?:signature|nonce|token|consumer[_-]?key))=)([^&#\s]+)"),
+    re.compile(r"(?i)(/feeds/calendars/)([^/\s?#\[]+\.ics)"),
     re.compile(r"(?<![A-Za-z])\d{8,}(?![A-Za-z])"),
 ]
 

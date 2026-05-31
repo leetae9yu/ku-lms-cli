@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SCAN_DIRS = ["src", "tests", "scripts", "docs", "codex/skills", ".omx/specs", ".omx/plans", "README.md", "README_ko.md", "pyproject.toml"]
 SKIP_PARTS = {".git", ".pytest_cache", "__pycache__", ".cache", "private", "downloads"}
 FORBIDDEN_COMMANDS = {"submit", "upload", "post", "comment", "delete", "edit", "write", "mark", "enroll"}
+RAW_CALENDAR_FEED_PATTERN = "/feeds/calendars/" + "user_"
 
 
 def parse_env(path: Path) -> dict[str, str]:
@@ -59,6 +60,8 @@ def main(argv: list[str] | None = None) -> int:
         for value in env_values:
             if value and value in text:
                 failures.append(f"secret value leaked into {file.relative_to(ROOT)}")
+        if RAW_CALENDAR_FEED_PATTERN in text:
+            failures.append(f"raw calendar feed URL pattern leaked into {file.relative_to(ROOT)}")
     # Ensure forbidden commands fail closed and are not presented in help text.
     sys.path.insert(0, str(ROOT / "src"))
     from ku_lms_cli.cli import build_parser, FORBIDDEN_COMMANDS as CLI_FORBIDDEN  # noqa: WPS433
@@ -73,7 +76,7 @@ def main(argv: list[str] | None = None) -> int:
         for failure in failures:
             print(f"FAIL: {failure}")
         return 1
-    print("PASS: safety scan found no known secret leaks or exposed mutating commands")
+    print("PASS: safety scan found no known secret leaks, raw calendar feed URLs, or exposed mutating commands")
     return 0
 
 

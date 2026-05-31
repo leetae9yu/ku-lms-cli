@@ -43,7 +43,7 @@ def test_forbidden_commands_fail_closed(capsys):
 def test_required_command_families_exist():
     parser = build_parser()
     help_text = parser.format_help()
-    for command in ["status", "login", "discover", "courses", "materials", "assignments", "recordings"]:
+    for command in ["status", "login", "discover", "courses", "materials", "assignments", "recordings", "calendar"]:
         assert command in help_text
 
 
@@ -51,6 +51,12 @@ def test_redact_query_token_values():
     redacted = redact_text("https://example.test/path?token=abc123456789&safe=ok")
     assert "abc123456789" not in redacted
     assert "token=[REDACTED]" in redacted
+
+
+def test_redact_calendar_feed_url_token():
+    redacted = redact_text("https://mylms.korea.ac.kr/feeds/calendars/" + "user_abc123TOKEN.ics")
+    assert "user_abc123TOKEN" not in redacted
+    assert "[REDACTED]" in redacted
 
 
 def test_default_config_falls_back_to_user_config_home(tmp_path, monkeypatch):
