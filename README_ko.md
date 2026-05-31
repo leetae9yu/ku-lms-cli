@@ -1,0 +1,208 @@
+# KU LMS CLI
+
+고려대학교 LMS를 CLI에서 안전하게 조회하고, 녹화 강의를 브라우저 기반으로 재생/유지할 수 있게 만든 도구입니다.
+
+> 기본 원칙: **읽기/다운로드/녹화 재생만 지원**합니다. 과제 제출, 업로드, 글쓰기, 댓글, 수정, 삭제 같은 LMS 변경 작업은 의도적으로 막혀 있습니다.
+
+## 설치
+
+저장소를 클론한 뒤 루트 디렉터리에서 실행하세요.
+
+```bash
+python -m pip install -e .
+```
+
+설치 후 CLI 엔트리포인트:
+
+```bash
+ku-lms --help
+```
+
+개발 체크아웃에서 바로 실행하려면:
+
+```bash
+PYTHONPATH=src python -m ku_lms_cli.cli --help
+```
+
+## 개인 계정 설정
+
+각 사용자는 자기 고려대 LMS/KUPID 계정을 로컬 `KU_LMS.env` 파일에 넣어야 합니다.
+
+```bash
+cp KU_LMS.env.example KU_LMS.env
+$EDITOR KU_LMS.env
+```
+
+형식:
+
+```env
+KU_LMS_ID=your-kupid-id
+KU_LMS_PWD=your-kupid-password
+```
+
+주의:
+
+- 실제 `KU_LMS.env`는 `.gitignore`에 포함되어 있어 커밋되지 않습니다.
+- 계정/비밀번호, 쿠키, 토큰, SSO/LTI 파라미터, raw URL은 출력하거나 저장하지 않는 것을 목표로 합니다.
+- `KU_LMS.env.example`에는 placeholder만 넣어야 합니다.
+
+## 빠른 사용법
+
+상태 확인:
+
+```bash
+ku-lms --json status
+```
+
+실제 LMS 과목 조회:
+
+```bash
+ku-lms --json --live courses
+```
+
+특정 과목 과제 조회:
+
+```bash
+ku-lms --json --live assignments list --course "국제법"
+ku-lms --json --live assignments deadlines --course "국제법"
+```
+
+특정 과목 녹화 강의 목록:
+
+```bash
+ku-lms --json --live recordings list --course "국제법"
+```
+
+녹화 강의 재생:
+
+```bash
+ku-lms --json --live recordings play --course "국제법" --title "1차시" --until-end
+```
+
+일정 시간 재생/유지:
+
+```bash
+ku-lms --json --live recordings keepalive --course "국제법" --title "1차시" --seconds 30
+```
+
+브라우저 창을 직접 보고 싶으면:
+
+```bash
+ku-lms --json --live --headful courses
+```
+
+## 주요 명령
+
+### fixture 모드
+
+`--live`를 붙이지 않으면 샘플 fixture 데이터로 동작합니다.
+
+```bash
+ku-lms --json courses
+ku-lms --json materials list
+ku-lms --json materials download --id sample-material
+ku-lms --json assignments list
+ku-lms --json assignments deadlines
+ku-lms --json assignments download --id sample-assignment-file
+ku-lms --json recordings list
+ku-lms --json recordings play --id sample-recording
+ku-lms --json recordings keepalive --id sample-recording
+```
+
+### live 모드
+
+`--live`를 붙이면 로컬 브라우저/CDP 세션으로 로그인해 실제 LMS를 조회합니다.
+
+지원 범위:
+
+- 과목 목록 조회
+- 과목별 과제/마감일 조회
+- 과목별 녹화 강의 목록 조회
+- 녹화 강의 재생/keepalive
+
+옵션:
+
+```bash
+--env-file KU_LMS.env  # env 파일 위치 지정
+--headful              # 브라우저 창 표시
+--timeout 120          # 브라우저/CDP 타임아웃 초 단위
+```
+
+## 안전 정책
+
+허용:
+
+- 로그인 세션 생성
+- 읽기 전용 조회
+- 자료 다운로드 scaffold
+- 녹화 강의 재생/keepalive
+- 녹화 재생으로 인한 시청기록/진도/출석 체크 반영
+
+금지:
+
+- 과제 제출 자동화
+- 파일 업로드
+- 글쓰기/댓글/수정/삭제
+- 수강신청/등록 변경
+- LMS 상태를 직접 변경하는 명령
+
+금지 명령은 fail-closed 됩니다.
+
+```bash
+ku-lms --json submit
+# -> not supported by design
+```
+
+## 출력 정책
+
+live 출력에는 다음 정도만 포함되도록 제한합니다.
+
+- 과목명
+- 과제명, 마감일, 제출 상태 요약
+- 녹화 강의 모듈/제목
+- 재생 상태 요약
+
+출력하지 않아야 하는 것:
+
+- 실제 계정/비밀번호
+- 쿠키/세션/토큰
+- Authorization 헤더
+- OAuth/SAML/LTI 파라미터
+- raw course id
+- raw launch URL
+- 이메일 등 민감 식별자
+
+## Chrome / 브라우저 설정
+
+live 모드는 Chrome 또는 `headless_shell`을 찾습니다. 자동 탐색이 실패하면 다음 환경변수를 지정하세요.
+
+```bash
+export KU_LMS_CHROME=/path/to/chrome-or-headless_shell
+```
+
+## 개발/검증
+
+```bash
+pytest -q
+python scripts/safety_scan.py
+python -m compileall -q src tests scripts
+python -m build --sdist --wheel
+```
+
+`submit` 같은 금지 명령은 반드시 실패해야 합니다.
+
+```bash
+PYTHONPATH=src python -m ku_lms_cli.cli --json submit
+```
+
+## 제한 사항
+
+- KU LMS/SSO/녹화 플레이어 UI가 바뀌면 live 모드 selector/CDP 로직을 업데이트해야 할 수 있습니다.
+- 자료 다운로드와 과제 첨부 다운로드는 현재 안전한 scaffold/fixture 중심입니다.
+- GitHub Actions workflow는 현재 저장소에 포함하지 않았습니다. 초기 push 당시 사용한 GitHub OAuth token에 `workflow` scope가 없었기 때문입니다.
+
+## 관련 문서
+
+- [English README](README.md)
+- [Live mode details](docs/live.md)
+- [Discovery details](docs/discovery.md)

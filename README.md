@@ -1,5 +1,7 @@
 # KU LMS CLI
 
+[한국어 README](README_ko.md)
+
 Discovery-first, secret-safe CLI for Korea University LMS automation. Each user provides their own KU LMS/KUPID credentials locally via `KU_LMS.env`.
 
 
