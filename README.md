@@ -7,13 +7,27 @@ Discovery-first, secret-safe CLI for Korea University LMS automation. Each user 
 
 ## Install
 
-From the repository root:
+One-command install from GitHub:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/leetae9yu/ku-lms-cli/main/scripts/install.sh | bash
+```
+
+This installs the `ku-lms` CLI, registers the bundled Codex skill at `~/.codex/skills/ku-lms`, and creates `~/.config/ku-lms-cli/KU_LMS.env` from the example if it does not already exist. Edit that env file with your own KU LMS/KUPID credentials before live use.
+
+From a cloned repository, run the same installer locally:
+
+```bash
+bash scripts/install.sh
+```
+
+Development editable install alternative:
 
 ```bash
 python -m pip install -e .
 ```
 
-Or install directly from GitHub after cloning/forking. The CLI entrypoint is:
+The CLI entrypoint is:
 
 ```bash
 ku-lms --help
@@ -21,7 +35,13 @@ ku-lms --help
 
 ## Per-user credential setup
 
-Each user must create their own local `KU_LMS.env` file. Do **not** share or commit it.
+Each user must create their own local `KU_LMS.env` file. Do **not** share or commit it. If you used `scripts/install.sh`, the global template already exists here:
+
+```bash
+$EDITOR ~/.config/ku-lms-cli/KU_LMS.env
+```
+
+For a repository-local env file instead:
 
 ```bash
 cp KU_LMS.env.example KU_LMS.env
@@ -51,6 +71,11 @@ Lookup order when `--env-file` is omitted:
 1. `KU_LMS_ENV_FILE` environment variable, if set
 2. `./KU_LMS.env` in the current working directory
 3. `~/.config/ku-lms-cli/KU_LMS.env`
+
+
+## Codex skill
+
+The repository bundles a Codex skill in `codex/skills/ku-lms`. The one-command installer copies it to `~/.codex/skills/ku-lms` so Codex can translate natural-language LMS requests into safe `ku-lms` commands. The skill preserves the same safety boundary as the CLI: read-only queries, downloads, and recording playback only; no submissions or LMS-mutating actions.
 
 ## Safety model
 

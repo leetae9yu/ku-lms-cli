@@ -1,0 +1,4 @@
+interface:
+  display_name: "KU LMS"
+  short_description: "Use KU LMS CLI safely for LMS"
+  default_prompt: "Use ku-lms to answer my Korea University LMS question safely."

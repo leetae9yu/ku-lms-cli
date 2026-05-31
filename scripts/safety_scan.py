@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SCAN_DIRS = ["src", "tests", "scripts", "docs", ".omx/specs", ".omx/plans", "README.md", "pyproject.toml"]
+SCAN_DIRS = ["src", "tests", "scripts", "docs", "codex/skills", ".omx/specs", ".omx/plans", "README.md", "README_ko.md", "pyproject.toml"]
 SKIP_PARTS = {".git", ".pytest_cache", "__pycache__", ".cache", "private", "downloads"}
 FORBIDDEN_COMMANDS = {"submit", "upload", "post", "comment", "delete", "edit", "write", "mark", "enroll"}
 

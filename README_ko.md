@@ -6,7 +6,21 @@
 
 ## 설치
 
-저장소를 클론한 뒤 루트 디렉터리에서 실행하세요.
+GitHub에서 원커맨드로 설치:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/leetae9yu/ku-lms-cli/main/scripts/install.sh | bash
+```
+
+이 명령은 `ku-lms` CLI를 설치하고, Codex 스킬을 `~/.codex/skills/ku-lms`에 자동 등록하며, 전역 env 파일 `~/.config/ku-lms-cli/KU_LMS.env`가 없으면 예시 템플릿을 생성합니다. live 사용 전에 그 파일에 본인 LMS/KUPID 계정을 입력하세요.
+
+저장소를 클론한 경우에는 루트 디렉터리에서 같은 설치 스크립트를 실행하면 됩니다.
+
+```bash
+bash scripts/install.sh
+```
+
+개발용 editable install 대안:
 
 ```bash
 python -m pip install -e .
@@ -26,7 +40,13 @@ PYTHONPATH=src python -m ku_lms_cli.cli --help
 
 ## 개인 계정 설정
 
-각 사용자는 자기 고려대 LMS/KUPID 계정을 로컬 `KU_LMS.env` 파일에 넣어야 합니다.
+각 사용자는 자기 고려대 LMS/KUPID 계정을 로컬 env 파일에 넣어야 합니다. 실제 값은 공유/커밋하지 마세요. 원커맨드 설치를 사용했다면 전역 env 템플릿이 이미 만들어져 있습니다.
+
+```bash
+$EDITOR ~/.config/ku-lms-cli/KU_LMS.env
+```
+
+저장소 안에서만 쓸 로컬 env 파일을 만들 수도 있습니다.
 
 ```bash
 cp KU_LMS.env.example KU_LMS.env
@@ -60,6 +80,11 @@ ku-lms --json --live courses
 1. `KU_LMS_ENV_FILE` 환경변수
 2. 현재 작업 디렉터리의 `./KU_LMS.env`
 3. `~/.config/ku-lms-cli/KU_LMS.env`
+
+
+## Codex 스킬
+
+이 저장소는 Codex용 스킬을 `codex/skills/ku-lms`에 함께 포함합니다. 원커맨드 설치는 이 스킬을 `~/.codex/skills/ku-lms`에 복사해서, Codex가 “공학수학 과제 확인”, “국제법 영상 목록” 같은 자연어 요청을 안전한 `ku-lms` 명령으로 실행할 수 있게 합니다. 스킬도 CLI와 같은 안전 경계를 따릅니다: 읽기/다운로드/녹화 재생만 허용하고, 과제 제출·업로드·글쓰기·수정·삭제는 금지합니다.
 
 ## 빠른 사용법
 
