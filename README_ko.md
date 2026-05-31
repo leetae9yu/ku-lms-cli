@@ -46,6 +46,21 @@ KU_LMS_PWD=your-kupid-password
 - 계정/비밀번호, 쿠키, 토큰, SSO/LTI 파라미터, raw URL은 출력하거나 저장하지 않는 것을 목표로 합니다.
 - `KU_LMS.env.example`에는 placeholder만 넣어야 합니다.
 
+전역 기본 env 파일도 지원하므로 저장소 밖에서 `--env-file` 없이 실행할 수 있습니다.
+
+```bash
+mkdir -p ~/.config/ku-lms-cli
+cp KU_LMS.env.example ~/.config/ku-lms-cli/KU_LMS.env
+$EDITOR ~/.config/ku-lms-cli/KU_LMS.env
+ku-lms --json --live courses
+```
+
+`--env-file`을 생략했을 때 탐색 순서:
+
+1. `KU_LMS_ENV_FILE` 환경변수
+2. 현재 작업 디렉터리의 `./KU_LMS.env`
+3. `~/.config/ku-lms-cli/KU_LMS.env`
+
 ## 빠른 사용법
 
 상태 확인:

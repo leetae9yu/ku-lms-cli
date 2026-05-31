@@ -51,3 +51,35 @@ def test_redact_query_token_values():
     redacted = redact_text("https://example.test/path?token=abc123456789&safe=ok")
     assert "abc123456789" not in redacted
     assert "token=[REDACTED]" in redacted
+
+
+def test_default_config_falls_back_to_user_config_home(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    config_home = tmp_path / "xdg"
+    global_env = config_home / "ku-lms-cli" / "KU_LMS.env"
+    global_env.parent.mkdir(parents=True)
+    global_env.write_text("KU_LMS_ID=global-student\nKU_LMS_PWD=global-secret\n", encoding="utf-8")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
+    monkeypatch.delenv("KU_LMS_ID", raising=False)
+    monkeypatch.delenv("KU_LMS_PWD", raising=False)
+
+    config = load_config()
+
+    assert config.user_id == "global-student"
+    assert config.password == "global-secret"
+    assert config.env_path == global_env
+
+
+def test_ku_lms_env_file_override_wins_over_default(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    override = tmp_path / "custom.env"
+    override.write_text("KU_LMS_ID=override-student\nKU_LMS_PWD=override-secret\n", encoding="utf-8")
+    Path("KU_LMS.env").write_text("KU_LMS_ID=local-student\nKU_LMS_PWD=local-secret\n", encoding="utf-8")
+    monkeypatch.setenv("KU_LMS_ENV_FILE", str(override))
+    monkeypatch.delenv("KU_LMS_ID", raising=False)
+    monkeypatch.delenv("KU_LMS_PWD", raising=False)
+
+    config = load_config()
+
+    assert config.user_id == "override-student"
+    assert config.env_path == override

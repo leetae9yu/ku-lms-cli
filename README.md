@@ -37,6 +37,21 @@ KU_LMS_PWD=your-kupid-password
 
 The real `KU_LMS.env` file is gitignored. The CLI redacts these values from command output and the safety scan checks that known local credentials were not copied into tracked files.
 
+Global default lookup also supports a per-user env file, so `--env-file` is not required outside the repository:
+
+```bash
+mkdir -p ~/.config/ku-lms-cli
+cp KU_LMS.env.example ~/.config/ku-lms-cli/KU_LMS.env
+$EDITOR ~/.config/ku-lms-cli/KU_LMS.env
+ku-lms --json --live courses
+```
+
+Lookup order when `--env-file` is omitted:
+
+1. `KU_LMS_ENV_FILE` environment variable, if set
+2. `./KU_LMS.env` in the current working directory
+3. `~/.config/ku-lms-cli/KU_LMS.env`
+
 ## Safety model
 
 - Reads each user's local credentials from `KU_LMS.env` (`KU_LMS_ID`, `KU_LMS_PWD`) but must never print or commit values.
