@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+build/
+dist/
+*.egg-info/
+
+# Local secrets and LMS private/generated data
+KU_LMS.env
+*.env
+.cache/*
+!.cache/ku-lms-cli/
+.cache/ku-lms-cli/*
+!.cache/ku-lms-cli/.gitkeep
+private/*
+!private/.gitkeep
+downloads/*
+!downloads/.gitkeep
+discovery/
+*.har
+*.trace
+
+# Browser/runtime captures
+*.webm
+*.mp4
+# OMX/Codex local workflow state
+.omx/
+
