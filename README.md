@@ -1,10 +1,43 @@
 # KU LMS CLI
 
-Discovery-first, secret-safe CLI scaffold for Korea University LMS automation.
+Discovery-first, secret-safe CLI for Korea University LMS automation. Each user provides their own KU LMS/KUPID credentials locally via `KU_LMS.env`.
+
+
+## Install
+
+From the repository root:
+
+```bash
+python -m pip install -e .
+```
+
+Or install directly from GitHub after cloning/forking. The CLI entrypoint is:
+
+```bash
+ku-lms --help
+```
+
+## Per-user credential setup
+
+Each user must create their own local `KU_LMS.env` file. Do **not** share or commit it.
+
+```bash
+cp KU_LMS.env.example KU_LMS.env
+$EDITOR KU_LMS.env
+```
+
+`KU_LMS.env` format:
+
+```env
+KU_LMS_ID=your-kupid-id
+KU_LMS_PWD=your-kupid-password
+```
+
+The real `KU_LMS.env` file is gitignored. The CLI redacts these values from command output and the safety scan checks that known local credentials were not copied into tracked files.
 
 ## Safety model
 
-- Reads credentials from `KU_LMS.env` (`KU_LMS_ID`, `KU_LMS_PWD`) but must never print or commit values.
+- Reads each user's local credentials from `KU_LMS.env` (`KU_LMS_ID`, `KU_LMS_PWD`) but must never print or commit values.
 - Assignment submission and all LMS-mutating commands are out of scope by design.
 - Recording playback/keepalive may create progress, attendance, or viewing-history side effects; this is accepted for the requested v1 and must remain documented.
 - Sessions, downloads, raw discovery data, traces, videos, screenshots, and private artifacts are local-only and gitignored.
@@ -17,6 +50,10 @@ The scaffold includes package metadata, CLI skeleton, config loading, redaction,
 ## Usage
 
 ```bash
+ku-lms --json status
+ku-lms --json --live courses
+
+# Development checkout alternative:
 PYTHONPATH=src python -m ku_lms_cli.cli --json status
 PYTHONPATH=src python -m ku_lms_cli.cli login
 PYTHONPATH=src python -m ku_lms_cli.cli discover
