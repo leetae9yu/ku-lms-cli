@@ -2,17 +2,22 @@
 from __future__ import annotations
 
 import argparse
+import html
 import json
+import re
 import sys
+from datetime import datetime
+from pathlib import Path
 from typing import Any
 
+from .captions import is_korean_caption_track
 from .config import DEFAULT_ENV_PATH, load_config
 from .discovery import DEFAULT_ENTRY_URL, run_discovery
 from .domain import to_dicts
 from .paths import PathPolicy
 from .provider import FixtureProvider
 from .live import LiveCommandError, LiveLmsProvider, LiveOptions
-from .redaction import redact_data
+from .redaction import redact_data, redact_text
 from .session import SessionState, write_session_marker
 
 FORBIDDEN_COMMANDS = {"submit", "upload", "post", "comment", "delete", "edit", "write", "mark", "enroll"}
@@ -43,13 +48,14 @@ def build_parser() -> argparse.ArgumentParser:
     assignments.add_argument("action", nargs="?", choices=["list", "deadlines", "download"], default="list")
     assignments.add_argument("--id", dest="item_id", default="sample-assignment-file", help="Attachment id for download")
     assignments.add_argument("--course", default="", help="Course name substring for live mode")
-    recordings = sub.add_parser("recordings", help="List/play/keepalive recorded lectures")
-    recordings.add_argument("action", nargs="?", choices=["list", "play", "keepalive"], default="list")
+    recordings = sub.add_parser("recordings", help="List/play/keepalive recorded lectures and extract official captions")
+    recordings.add_argument("action", nargs="?", choices=["list", "play", "keepalive", "captions"], default="list")
     recordings.add_argument("--id", dest="item_id", default="sample-recording", help="Recording id for play/keepalive")
     recordings.add_argument("--course", default="", help="Course name substring for live mode")
     recordings.add_argument("--title", default="", help="Recording title/module substring for live playback")
     recordings.add_argument("--until-end", action="store_true", help="Play a recording until completion is observed in live mode")
     recordings.add_argument("--seconds", type=float, default=None, help="Playback/keepalive duration in seconds for live mode")
+    recordings.add_argument("--output", default="", help="Write extracted Korean captions as .txt to this file (captions action only; defaults to downloads/p-q-yyyymmdd-hhmmdd.txt)")
     calendar = sub.add_parser("calendar", help="List calendar events, todo items, and safely handle the calendar feed")
     calendar.add_argument("action", nargs="?", choices=["upcoming", "list", "todo", "feed"], default="upcoming")
     calendar.add_argument("--from", dest="from_date", default="", help="Start date for live calendar queries, e.g. 2026-05-31")
@@ -69,6 +75,107 @@ def _emit(payload: dict[str, Any], as_json: bool) -> int:
         for key, value in safe.items():
             print(f"{key}: {value}")
     return int(payload.get("exit_code", 0))
+
+
+def _caption_payload_with_txt_output(captions: dict[str, Any], output_path: str, policy: PathPolicy) -> dict[str, Any]:
+    tracks = _korean_caption_tracks(captions)
+    text = _plain_caption_text(tracks)
+    _validate_caption_text_for_save(text)
+    target = _caption_output_path(captions, output_path, policy)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(text, encoding="utf-8")
+    summary = {key: value for key, value in captions.items() if key != "tracks"}
+    summary["saved_to"] = str(target)
+    summary["text_format"] = "txt"
+    summary["track_count"] = len(tracks)
+    summary["caption_language"] = "ko"
+    summary["tracks"] = [
+        {key: value for key, value in track.items() if key != "text"}
+        for track in tracks
+        if isinstance(track, dict)
+    ]
+    return summary
+
+
+def _validate_caption_text_for_save(text: str) -> None:
+    if not text.strip():
+        raise LiveCommandError("official captions were found but did not contain extractable text")
+    if redact_text(text) != text:
+        raise LiveCommandError("refusing to save caption text because it contains URL or secret-like material")
+
+
+def _caption_output_path(captions: dict[str, Any], output_path: str, policy: PathPolicy) -> Path:
+    if output_path:
+        path = Path(output_path)
+    else:
+        path = policy.downloads_dir / f"{_caption_default_filename(captions)}.txt"
+    if path.suffix.casefold() != ".txt":
+        path = path.with_suffix(".txt")
+    return policy.resolve(path)
+
+
+def _caption_default_filename(captions: dict[str, Any]) -> str:
+    prefix = _caption_week_session_prefix(str(captions.get("module") or ""), str(captions.get("title") or ""))
+    return f"{prefix}-{datetime.now().strftime('%Y%m%d-%H%M%d')}"
+
+
+def _caption_week_session_prefix(module: str, title: str) -> str:
+    combined = f"{module} {title}"
+    week = re.search(r"(\d+)\s*주차", combined)
+    session = re.search(r"(\d+)\s*차시", combined)
+    if week and session:
+        return f"{int(week.group(1))}-{int(session.group(1))}"
+    return _safe_filename(title or module or "recording")
+
+
+def _safe_filename(value: str) -> str:
+    safe = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "-" for ch in value.strip())
+    safe = "-".join(part for part in safe.split("-") if part)
+    return safe[:80] or "recording"
+
+
+def _korean_caption_tracks(captions: dict[str, Any]) -> list[dict[str, Any]]:
+    tracks = [track for track in captions.get("tracks", []) if isinstance(track, dict)]
+    korean = [track for track in tracks if is_korean_caption_track(track)]
+    if not korean:
+        raise LiveCommandError("official captions were found but no Korean caption track was available")
+    return korean
+
+
+def _plain_caption_text(tracks: list[dict[str, Any]]) -> str:
+    parts: list[str] = []
+    for index, track in enumerate(tracks, start=1):
+        label = str(track.get("label") or track.get("language") or f"track-{index}")
+        text = _strip_caption_markup(str(track.get("text") or ""))
+        if not text:
+            continue
+        if len(tracks) > 1:
+            parts.append(f"# {label}")
+        parts.append(text)
+    return "\n\n".join(parts).rstrip() + "\n"
+
+
+def _strip_caption_markup(text: str) -> str:
+    text = html.unescape(text)
+    text = re.sub(r"<!\[CDATA\[(.*?)\]\]>", r"\1", text, flags=re.DOTALL)
+    text = re.sub(r"(?is)<(script|style)\b[^>]*>.*?</\1>", "\n", text)
+    text = re.sub(r"(?s)<[^>]+>", "\n", text)
+    lines: list[str] = []
+    seen_blank = False
+    for raw in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        line = raw.strip().lstrip("\ufeff")
+        if not line or line == "WEBVTT" or line.startswith(("NOTE", "STYLE", "REGION")):
+            if lines and not seen_blank:
+                lines.append("")
+                seen_blank = True
+            continue
+        if "-->" in line or line.isdigit():
+            continue
+        lines.append(line)
+        seen_blank = False
+    while lines and not lines[-1]:
+        lines.pop()
+    return "\n".join(lines)
 
 
 def _first_command(argv: list[str]) -> str | None:
@@ -161,9 +268,20 @@ def run(argv: list[str] | None = None, live_provider_factory: Any | None = None)
             try:
                 if args.action == "list":
                     return _emit({"ok": True, "recordings": provider.recordings(args.course)}, args.json)
+                if args.action == "captions":
+                    captions = provider.recording_captions(args.course, args.title)
+                    return _emit({"ok": True, "captions": _caption_payload_with_txt_output(captions, args.output, policy)}, args.json)
                 seconds = args.seconds if args.seconds is not None else (30.0 if args.action == "keepalive" and not args.until_end else None)
                 playback = provider.play_recording(args.course, args.title or args.item_id, until_end=args.until_end, seconds=seconds)
                 return _emit({"ok": True, "playback": playback}, args.json)
+            except LiveCommandError as exc:
+                return _emit({"ok": False, "error": str(exc), "exit_code": 1}, args.json)
+        if args.action == "captions":
+            try:
+                captions = provider.recording_captions(args.item_id)
+                return _emit({"ok": True, "captions": _caption_payload_with_txt_output(captions, args.output, policy)}, args.json)
+            except KeyError:
+                return _emit({"ok": False, "error": "recording not found", "id": args.item_id, "exit_code": 1}, args.json)
             except LiveCommandError as exc:
                 return _emit({"ok": False, "error": str(exc), "exit_code": 1}, args.json)
         if args.action in {"play", "keepalive"}:

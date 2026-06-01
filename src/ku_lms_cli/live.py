@@ -7,8 +7,10 @@ browser session and are never part of CLI payloads.
 from __future__ import annotations
 
 import asyncio
+import html
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -23,6 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol
 
+from .captions import is_korean_caption_track
 from .config import KuLmsConfig
 from .discovery import DEFAULT_ENTRY_URL
 from .redaction import redact_data, redact_text
@@ -55,6 +58,8 @@ class BrowserSession(Protocol):
     async def get_calendar_feed_url(self) -> str: ...
 
     async def play_url(self, url: str, *, until_end: bool = False, seconds: float | None = None) -> dict[str, Any]: ...
+
+    async def extract_captions(self, url: str) -> list[dict[str, Any]]: ...
 
 
 class LiveLmsProvider:
@@ -98,6 +103,9 @@ class LiveLmsProvider:
 
     def play_recording(self, course: str, title: str, *, until_end: bool = False, seconds: float | None = None) -> dict[str, Any]:
         return _run(self._play_recording_async(course, title, until_end=until_end, seconds=seconds))
+
+    def recording_captions(self, course: str, title: str = "") -> dict[str, Any]:
+        return _run(self._recording_captions_async(course, title))
 
     async def _courses_async(self) -> list[dict[str, Any]]:
         async with self._session_factory() as session:
@@ -193,6 +201,20 @@ class LiveLmsProvider:
             playback = await session.play_url(recording["url"], until_end=until_end, seconds=seconds)
         return _public_playback(recording, playback, until_end=until_end, seconds=seconds)
 
+    async def _recording_captions_async(self, course_query: str, title_query: str = "") -> dict[str, Any]:
+        async with self._session_factory() as session:
+            await session.login()
+            course = await _select_course(session, course_query)
+            candidates = await _recording_candidates(session, course)
+            recordings = [_select_recording(candidates, title_query)] if title_query else candidates
+            for recording in recordings:
+                captions = await session.extract_captions(recording["url"])
+                captions = [caption for caption in captions if is_korean_caption_track(caption)]
+                if captions:
+                    return _public_captions(recording, captions)
+        detail = "selected recording page" if title_query else "recordings in the selected course"
+        raise LiveCommandError(f"no official Korean captions were found on {detail}")
+
 
 async def _fetch_courses(session: BrowserSession) -> list[dict[str, Any]]:
     data = await session.fetch_json("/api/v1/courses?per_page=100&enrollment_state=active")
@@ -252,9 +274,15 @@ def _select_recording(candidates: list[dict[str, Any]], query: str) -> dict[str,
         names = ", ".join(str(item.get("title", "")) for item in candidates[:10])
         raise LiveCommandError(f"recording not found; available titles include: {names}")
     if len(matches) > 1:
+        normalized_query = query.strip().casefold()
+        exact = [item for item in matches if str(item.get("title", "")).strip().casefold() == normalized_query]
+        if exact:
+            return exact[0]
+        prefix = [item for item in matches if str(item.get("title", "")).strip().casefold().startswith(normalized_query)]
+        if prefix:
+            return sorted(prefix, key=lambda item: len(str(item.get("title", ""))))[0]
         shortest = sorted(matches, key=lambda item: len(str(item.get("title", ""))))[0]
-        exact = [item for item in matches if str(item.get("title", "")).strip().casefold() == query.strip().casefold()]
-        return exact[0] if exact else shortest
+        return shortest
     return matches[0]
 
 
@@ -356,6 +384,61 @@ def _public_playback(recording: dict[str, Any], playback: dict[str, Any], *, unt
     )
 
 
+def _public_captions(recording: dict[str, Any], captions: list[dict[str, Any]]) -> dict[str, Any]:
+    public_tracks = []
+    for item in captions:
+        text = str(item.get("text") or "").strip()
+        if not text:
+            continue
+        public_tracks.append(
+            {
+                "label": item.get("label") or "",
+                "language": item.get("language") or "",
+                "format": item.get("format") or _caption_format_from_text(text),
+                "source": item.get("source") or "official_caption",
+                "char_count": len(text),
+                "text": text,
+            }
+        )
+    return redact_data(
+        {
+            "module": recording.get("module", ""),
+            "title": recording.get("title", ""),
+            "track_count": len(public_tracks),
+            "tracks": public_tracks,
+            "raw_urls_printed": False,
+        }
+    )
+
+
+def _caption_format_from_text(text: str) -> str:
+    sample = text.lstrip("\ufeff\n\r\t ")
+    if sample.startswith("WEBVTT"):
+        return "vtt"
+    if re.search(r"(?m)^\d+\s*\n\d{2}:\d{2}:\d{2},\d{3}\s+-->\s+", sample):
+        return "srt"
+    if sample.startswith("<?xml") or "<tt " in sample[:200] or "<transcript" in sample[:200]:
+        return "xml"
+    return "text"
+
+
+def _dedupe_captions(captions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen: set[tuple[str, str, str]] = set()
+    unique = []
+    for item in captions:
+        text = str(item.get("text") or "").strip()
+        if not text:
+            continue
+        key = (str(item.get("label") or ""), str(item.get("language") or ""), text[:500])
+        if key in seen:
+            continue
+        seen.add(key)
+        clone = dict(item)
+        clone["text"] = text
+        unique.append(clone)
+    return unique
+
+
 def _remaining_candidate(due_at: str, locked: bool, submitted_at: str, workflow: str) -> bool:
     if locked or submitted_at or workflow in {"submitted", "graded"} or not due_at:
         return False
@@ -427,6 +510,133 @@ def _run(coro: Any) -> Any:
         raise LiveCommandError(redact_text(message)) from exc
 
 
+def _looks_like_caption_response(url: str, mime: str) -> bool:
+    lowered_url = url.casefold()
+    lowered_mime = mime.casefold()
+    if any(kind in lowered_mime for kind in ("text/vtt", "application/x-subrip", "application/ttml", "application/dfxp", "text/srt")):
+        return True
+    if any(lowered_url.split("?", 1)[0].endswith(ext) for ext in (".vtt", ".srt", ".ttml", ".dfxp", ".smi", ".sami")):
+        return True
+    return any(token in lowered_url for token in ("caption", "subtitle", "subtitles", "transcript", "media_script", "script_list", "vtt")) and any(kind in lowered_mime for kind in ("text", "json", "xml", "octet-stream"))
+
+
+def _caption_format_from_url_or_mime(url: str, mime: str) -> str:
+    lowered = f"{url} {mime}".casefold()
+    if "vtt" in lowered:
+        return "vtt"
+    if "srt" in lowered or "subrip" in lowered:
+        return "srt"
+    if "ttml" in lowered or "dfxp" in lowered or "xml" in lowered:
+        return "xml"
+    if "json" in lowered:
+        return "json"
+    return "text"
+
+
+def _is_caption_body(text: str) -> bool:
+    return bool(_caption_body_to_plain_text(text))
+
+
+def _normalize_caption_item(item: dict[str, Any]) -> dict[str, Any] | None:
+    raw_text = str(item.get("text") or "")
+    text = _caption_body_to_plain_text(raw_text)
+    if not text or _contains_secret_like_caption_text(text):
+        return None
+    return {
+        "label": item.get("label") or "",
+        "language": item.get("language") or "",
+        "format": item.get("format") or _caption_format_from_text(raw_text),
+        "source": item.get("source") or "official_caption",
+        "text": text,
+    }
+
+
+def _caption_body_to_plain_text(text: str) -> str:
+    sample = text.lstrip("\ufeff\n\r\t ")
+    lowered = sample[:2000].casefold()
+    if not sample.strip() or "<html" in lowered or "잘못된 요청" in sample:
+        return ""
+    if _looks_like_javascript_body(sample):
+        return ""
+    if sample.startswith("WEBVTT") or "-->" in sample[:2000]:
+        return _plain_caption_lines(sample)
+    if sample[:1] in "[{":
+        return _plain_caption_json(sample)
+    if "<" in sample and ">" in sample:
+        xmlish = html.unescape(sample)
+        xmlish = re.sub(r"<!\[CDATA\[(.*?)\]\]>", r"\1", xmlish, flags=re.DOTALL)
+        xmlish = re.sub(r"(?is)<(script|style)\b[^>]*>.*?</\1>", "\n", xmlish)
+        xmlish = re.sub(r"(?s)<[^>]+>", "\n", xmlish)
+        return _plain_caption_lines(xmlish)
+    return _plain_caption_lines(sample) if len(sample.strip()) >= 2 else ""
+
+
+def _plain_caption_json(text: str) -> str:
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return ""
+    values: list[str] = []
+
+    def visit(value: Any, key: str = "") -> None:
+        if isinstance(value, dict):
+            for child_key, child in value.items():
+                visit(child, str(child_key).casefold())
+        elif isinstance(value, list):
+            for child in value:
+                visit(child, key)
+        elif isinstance(value, str) and key in {"text", "caption", "subtitle", "transcript", "script", "body"}:
+            values.append(value)
+
+    visit(data)
+    return _plain_caption_lines("\n".join(values))
+
+
+def _plain_caption_lines(text: str) -> str:
+    lines: list[str] = []
+    in_block = ""
+    for raw in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        line = html.unescape(raw.strip().lstrip("\ufeff"))
+        upper = line.upper()
+        if in_block:
+            if not line:
+                in_block = ""
+            continue
+        if not line or upper == "WEBVTT" or upper.startswith(("STYLE", "REGION", "NOTE")):
+            if upper.startswith(("STYLE", "REGION", "NOTE")):
+                in_block = upper.split(maxsplit=1)[0]
+            if lines and lines[-1]:
+                lines.append("")
+            continue
+        if "-->" in line or line.isdigit():
+            continue
+        # Common cue identifiers sit directly above a timestamp. They are harmless but noisy;
+        # keep only lines that look like human transcript text.
+        if re.fullmatch(r"[A-Za-z0-9_.:-]{1,80}", line) and not re.search(r"[가-힣\s.,!?]", line):
+            continue
+        clean = re.sub(r"<[^>]+>", "", line).strip()
+        if clean:
+            lines.append(clean)
+    while lines and not lines[-1]:
+        lines.pop()
+    return "\n".join(lines)
+
+
+def _looks_like_javascript_body(text: str) -> bool:
+    sample = text[:2000]
+    if re.search(r"(?m)^\s*(var|let|const|function|import|export)\b", sample):
+        return True
+    return bool(
+        re.search(r"(?m)^\s*(window|document|globalThis|self)\.", sample)
+        or re.search(r"=>\s*[{(]", sample)
+        or re.search(r"[{};]\s*(?:$|\n)", sample) and re.search(r"=|\(|\)", sample)
+    )
+
+
+def _contains_secret_like_caption_text(text: str) -> bool:
+    return redact_text(text) != text
+
+
 class CdpBrowserSession:
     """Minimal CDP browser session used by live CLI mode."""
 
@@ -439,6 +649,7 @@ class CdpBrowserSession:
         self._network_seen: dict[str, bool] = {}
         self._media_seen: dict[str, bool] = {}
         self._duration: float | None = None
+        self._caption_requests: list[dict[str, str]] = []
 
     async def __aenter__(self) -> "CdpBrowserSession":
         self._tmp = tempfile.TemporaryDirectory(prefix="ku-lms-cdp-")
@@ -616,6 +827,7 @@ class CdpBrowserSession:
         client = self._require_client()
         client.event_callback = self._on_event
         await self.goto(url)
+        await self._open_external_tool_content()
         await asyncio.sleep(2.0)
         await self.evaluate(_MEDIA_INSTRUMENTATION_SCRIPT)
         await self.evaluate("window.__kuLmsMediaPlay && window.__kuLmsMediaPlay()")
@@ -632,6 +844,113 @@ class CdpBrowserSession:
             "observed_duration_seconds": self._duration,
             "completed": bool(self._media_seen.get("pause") and (until_end or self._duration is not None)),
         }
+
+    async def extract_captions(self, url: str) -> list[dict[str, Any]]:
+        self._caption_requests = []
+        client = self._require_client()
+        client.event_callback = self._on_event
+        await self.goto(url)
+        await self._open_external_tool_content()
+        await self._start_media_playback()
+        await asyncio.sleep(1.5)
+        dom_captions = await self.evaluate(_CAPTION_EXTRACTION_SCRIPT, timeout=min(self.options.timeout_seconds, 30))
+        await asyncio.sleep(0.5)
+        await client.drain_events()
+        network_captions = await self._caption_bodies_from_network()
+        captions: list[dict[str, Any]] = []
+        if isinstance(dom_captions, list):
+            captions.extend(_normalize_caption_item(item) for item in dom_captions if isinstance(item, dict))
+        player_api_captions = [item for item in captions if item and item.get("source") == "player_caption_api"]
+        if player_api_captions:
+            return _dedupe_captions(player_api_captions)
+        captions.extend(network_captions)
+        return _dedupe_captions([item for item in captions if item])
+
+    async def _start_media_playback(self) -> None:
+        try:
+            await self.evaluate(
+                r"""
+                (() => {
+                  for (const video of Array.from(document.querySelectorAll('video'))) {
+                    try {
+                      video.muted = true;
+                      const result = video.play();
+                      if (result && result.catch) result.catch(() => false);
+                    } catch (_) {}
+                  }
+                  return true;
+                })()
+                """,
+                timeout=10,
+            )
+        except LiveCommandError:
+            return
+
+    async def _caption_bodies_from_network(self) -> list[dict[str, Any]]:
+        client = self._require_client()
+        captions: list[dict[str, Any]] = []
+        for item in list(self._caption_requests):
+            request_id = item.get("requestId")
+            if not request_id:
+                continue
+            try:
+                body = await client.send("Network.getResponseBody", {"requestId": request_id}, timeout=10)
+            except LiveCommandError:
+                continue
+            text = body.get("body") if isinstance(body, dict) else ""
+            if not isinstance(text, str) or not text.strip():
+                continue
+            if body.get("base64Encoded"):
+                continue
+            normalized = _normalize_caption_item(
+                {
+                    "label": item.get("label", ""),
+                    "language": item.get("language", ""),
+                    "format": item.get("format", _caption_format_from_text(text)),
+                    "source": "network_caption",
+                    "text": text,
+                }
+            )
+            if normalized:
+                captions.append(normalized)
+        return captions
+
+    async def _open_external_tool_content(self) -> None:
+        """Open Canvas/LearningX external-tool wrappers in the current tab.
+
+        Canvas module item URLs often render an LTI launch form whose default target is an
+        iframe or a new window. Headless extraction needs the actual player document as the
+        top-level page so DOM, performance resources, and text tracks can be inspected.
+        """
+        try:
+            action = await self.evaluate(_EXTERNAL_TOOL_OPEN_SCRIPT, timeout=10)
+        except LiveCommandError:
+            return
+        if action in {"submitted_form", "clicked_launch"}:
+            await asyncio.sleep(4.0)
+        iframe_src = ""
+        try:
+            iframe_src = str(
+                await self.evaluate(
+                    r"""
+                    (() => {
+                      const frames = Array.from(document.querySelectorAll('iframe[src]'));
+                      const target = frames.find((frame) => {
+                        const src = String(frame.src || '');
+                        return src && !src.startsWith('about:') && !src.includes('post_message_forwarding');
+                      });
+                      return target ? target.src : '';
+                    })()
+                    """,
+                    timeout=10,
+                )
+                or ""
+            )
+        except LiveCommandError:
+            iframe_src = ""
+        if iframe_src:
+            await self.goto(iframe_src)
+            await asyncio.sleep(5.0)
 
     async def _wait_until_media_complete(self, max_seconds: float) -> None:
         deadline = time.monotonic() + max_seconds
@@ -696,8 +1015,20 @@ class CdpBrowserSession:
             response = params.get("response") if isinstance(params.get("response"), dict) else {}
             mime = str(response.get("mimeType") or "").casefold()
             status = int(response.get("status") or 0)
+            url = str(response.get("url") or "")
             if "video/mp4" in mime and status == 206:
                 self._network_seen["video_mp4_partial_content_seen"] = True
+            if _looks_like_caption_response(url, mime):
+                request_id = str(params.get("requestId") or "")
+                if request_id and not any(item.get("requestId") == request_id for item in self._caption_requests):
+                    self._caption_requests.append(
+                        {
+                            "requestId": request_id,
+                            "format": _caption_format_from_url_or_mime(url, mime),
+                            "label": "",
+                            "language": "",
+                        }
+                    )
         if method == "Media.playerEvent":
             event = params.get("event") if isinstance(params.get("event"), dict) else {}
             name = str(event.get("value") or event.get("event") or event.get("name") or "").casefold()
@@ -813,6 +1144,140 @@ _MEDIA_INSTRUMENTATION_SCRIPT = r"""
     const timer = setInterval(() => { if (attach()) clearInterval(timer); }, 500);
   }
   return true;
+})()
+"""
+
+
+_EXTERNAL_TOOL_OPEN_SCRIPT = r"""
+(() => {
+  const textOf = (el) => String((el && (el.innerText || el.textContent || el.value || el.getAttribute('aria-label') || el.title)) || '').trim().replace(/\s+/g, ' ');
+  const form = document.querySelector('form#tool_form, form[action*=learningx], form[action*=lti]');
+  if (form) {
+    form.target = '_self';
+    if (form.requestSubmit) form.requestSubmit();
+    else HTMLFormElement.prototype.submit.call(form);
+    return 'submitted_form';
+  }
+  const launch = Array.from(document.querySelectorAll('button,input[type="submit"],a,[role="button"]')).find((el) => /새 창에|로드|load/i.test(textOf(el)));
+  if (launch) {
+    launch.click();
+    return 'clicked_launch';
+  }
+  return 'none';
+})()
+"""
+
+
+_CAPTION_EXTRACTION_SCRIPT = r"""
+(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const out = [];
+  const fmt = (value) => {
+    const n = Math.max(0, Number(value) || 0);
+    const h = String(Math.floor(n / 3600)).padStart(2, '0');
+    const m = String(Math.floor((n % 3600) / 60)).padStart(2, '0');
+    const s = String(Math.floor(n % 60)).padStart(2, '0');
+    const ms = String(Math.round((n - Math.floor(n)) * 1000)).padStart(3, '0');
+    return `${h}:${m}:${s}.${ms}`;
+  };
+  const cuesToVtt = (cues) => {
+    const lines = ['WEBVTT', ''];
+    for (const cue of Array.from(cues || [])) {
+      const text = String(cue && cue.text || '').trim();
+      if (!text) continue;
+      lines.push(`${fmt(cue.startTime ?? cue.start ?? 0)} --> ${fmt(cue.endTime ?? cue.end ?? 0)}`, text, '');
+    }
+    return lines.join('\n').trim() + '\n';
+  };
+  const pushCaptionList = (list, source) => {
+    for (const item of Array.from(list || [])) {
+      const caption = item && item.caption;
+      const text = cuesToVtt(caption && caption.cues);
+      if (text.trim() !== 'WEBVTT') {
+        out.push({
+          source,
+          label: item.label || item.lang || '',
+          language: item.lang || '',
+          format: 'vtt',
+          text,
+        });
+      }
+    }
+  };
+  const openPlayerCaptionScript = async () => {
+    try {
+      const cpi = window.uniPlayerConfig && uniPlayerConfig.getContentPlayingInfoData && uniPlayerConfig.getContentPlayingInfoData();
+      const firstIdx = window.uniPlayerConfig && uniPlayerConfig.getFirstStoryIdx && Number(uniPlayerConfig.getFirstStoryIdx());
+      if (cpi && Number.isFinite(firstIdx) && cpi.setCurrentStoryPlayingInfo) {
+        cpi.setCurrentStoryPlayingInfo(firstIdx);
+      }
+      if (window.uniPlayerConfig && uniPlayerConfig.organizeCurrStoryPlayingInfo) {
+        await Promise.race([
+          new Promise((resolve) => uniPlayerConfig.organizeCurrStoryPlayingInfo(resolve)),
+          wait(5000),
+        ]);
+      }
+      const list = window.GetCaptionList ? GetCaptionList() : (window.uniPlayerConfig && uniPlayerConfig.getClosedCaptionList && uniPlayerConfig.getClosedCaptionList());
+      if (Array.isArray(list)) {
+        window.captionScriptList = list;
+        pushCaptionList(list, 'player_caption_api');
+        if (window.showViewerCaptionScript) showViewerCaptionScript();
+        if (window.initializeCaptionScriptUI) initializeCaptionScriptUI();
+        if (window.setCaptionScriptList) setCaptionScriptList();
+      }
+    } catch (_) {}
+  };
+  const captureTrackCues = async () => {
+    for (const video of Array.from(document.querySelectorAll('video'))) {
+      for (const track of Array.from(video.textTracks || [])) {
+        try { track.mode = 'hidden'; } catch (_) {}
+      }
+    }
+    await wait(500);
+    for (const video of Array.from(document.querySelectorAll('video'))) {
+      for (const track of Array.from(video.textTracks || [])) {
+        const cues = Array.from(track.cues || track.activeCues || []).map((cue) => ({start: cue.startTime || 0, end: cue.endTime || 0, text: cue.text || ''})).filter((cue) => cue.text);
+        if (cues.length) out.push({source: 'text_track_cues', label: track.label || '', language: track.language || '', format: 'vtt', cues, text: ''});
+      }
+    }
+  };
+  const fetchTrackElements = async () => {
+    for (const track of Array.from(document.querySelectorAll('track[src]'))) {
+      const src = track.src || track.getAttribute('src') || '';
+      if (!src) continue;
+      try {
+        const response = await fetch(src, {credentials: 'include'});
+        if (response.ok) {
+          const text = await response.text();
+          if (text.trim()) out.push({source: 'track_element', label: track.label || '', language: track.srclang || track.getAttribute('srclang') || '', format: src.toLowerCase().includes('.srt') ? 'srt' : 'vtt', text});
+        }
+      } catch (_) {}
+    }
+  };
+  const fetchCaptionResources = async () => {
+    const names = performance.getEntriesByType('resource').map((r) => r.name).filter((name) => /caption|subtitle|transcript|media_script|script_list|\.vtt|\.srt|\.ttml|\.dfxp|\.smi/i.test(name) && !/\.js(?:[?#]|$)/i.test(name));
+    for (const name of names) {
+      try {
+        const response = await fetch(name, {credentials: 'include'});
+        if (!response.ok) continue;
+        const text = await response.text();
+        if (/caption|subtitle|transcript|media_script|<text|<p|WEBVTT|-->|자막|스크립트/i.test(text) && !/<html[\s>]/i.test(text) && !/(^|\n)\s*(var|function)\b/.test(text.slice(0, 1000))) {
+          out.push({source: 'player_caption_resource', label: '', language: '', format: name.toLowerCase().includes('.xml') ? 'xml' : '', text});
+        }
+      } catch (_) {}
+    }
+  };
+  await openPlayerCaptionScript();
+  await fetchTrackElements();
+  await captureTrackCues();
+  await fetchCaptionResources();
+  return out.map((item) => {
+    if (item.cues && !item.text) {
+      item.text = cuesToVtt(item.cues);
+    }
+    delete item.cues;
+    return item;
+  });
 })()
 """
 

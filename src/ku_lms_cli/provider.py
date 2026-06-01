@@ -114,6 +114,25 @@ class FixtureProvider:
             "implementation": "browser-provider-pending-live-discovery",
         }
 
+    def recording_captions(self, recording_id: str) -> dict:
+        recording = _find(self.recordings(), recording_id)
+        return {
+            "recording_id": recording.id,
+            "title": recording.title,
+            "track_count": 1,
+            "tracks": [
+                {
+                    "label": "한국어",
+                    "language": "ko",
+                    "format": "vtt",
+                    "source": "fixture",
+                    "char_count": 60,
+                    "text": "WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nSample caption text.\n",
+                }
+            ],
+            "raw_urls_printed": False,
+        }
+
 
 def _find(items, item_id: str):
     for item in items:

@@ -46,6 +46,7 @@ class FakeSession:
                     "name": "1주차",
                     "items": [
                         {"title": "1주차 1차시", "type": "ExternalTool", "html_url": "https://lti.example.invalid/launch?user_id=12345678"},
+                        {"title": "1주차 2차시", "type": "ExternalTool", "html_url": "https://lti.example.invalid/launch?user_id=87654321"},
                         {"title": "[강의 교안] 1주차", "type": "ExternalTool", "html_url": "https://files.example.invalid/raw"},
                     ],
                 }
@@ -125,7 +126,10 @@ def test_live_assignments_compute_remaining_without_ids_or_urls():
 def test_live_recordings_filter_handouts_and_hide_launch_urls():
     lms, _ = provider()
     rows = lms.recordings("국제법")
-    assert rows == [{"module": "1주차", "title": "1주차 1차시", "type": "ExternalTool", "playable": True}]
+    assert rows == [
+        {"module": "1주차", "title": "1주차 1차시", "type": "ExternalTool", "playable": True},
+        {"module": "1주차", "title": "1주차 2차시", "type": "ExternalTool", "playable": True},
+    ]
     assert "launch" not in str(rows)
 
 
@@ -196,3 +200,101 @@ def test_remaining_candidate_logic():
     assert _remaining_candidate("2000-01-01T00:00:00Z", False, "", "unsubmitted") is False
     assert _remaining_candidate("2099-01-01T00:00:00Z", True, "", "unsubmitted") is False
     assert _remaining_candidate("2099-01-01T00:00:00Z", False, "2099-01-01T00:00:00Z", "submitted") is False
+
+
+def test_live_recording_captions_selects_first_when_title_omitted():
+    lms, fake = provider()
+
+    async def extract_captions(url):
+        assert url == "https://lti.example.invalid/launch?user_id=12345678"
+        return [
+            {
+                "label": "한국어",
+                "language": "ko",
+                "format": "vtt",
+                "source": "track_element",
+                "text": "WEBVTT\n\n00:00:00.000 --> 00:00:02.000\n안녕하세요.\n",
+            }
+        ]
+
+    fake.extract_captions = extract_captions
+    result = lms.recording_captions("국제법")
+    assert result["title"] == "1주차 1차시"
+    assert result["track_count"] == 1
+    assert result["tracks"][0]["language"] == "ko"
+    assert "안녕하세요" in result["tracks"][0]["text"]
+    assert "lti.example" not in str(result)
+    assert "12345678" not in str(result)
+
+
+def test_live_recording_captions_skips_non_korean_when_title_omitted():
+    lms, fake = provider()
+    calls = []
+
+    async def extract_captions(url):
+        calls.append(url)
+        if len(calls) == 1:
+            return [
+                {
+                    "label": "English",
+                    "language": "en",
+                    "format": "vtt",
+                    "source": "track_element",
+                    "text": "WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nHello.\n",
+                }
+            ]
+        return [
+            {
+                "label": "한국어",
+                "language": "ko",
+                "format": "vtt",
+                "source": "track_element",
+                "text": "WEBVTT\n\n00:00:00.000 --> 00:00:02.000\n안녕하세요.\n",
+            }
+        ]
+
+    fake.extract_captions = extract_captions
+    result = lms.recording_captions("국제법")
+    assert result["title"] == "1주차 2차시"
+    assert len(calls) == 2
+    assert result["track_count"] == 1
+    assert result["tracks"][0]["language"] == "ko"
+
+
+def test_live_recording_captions_reports_missing_official_captions():
+    lms, fake = provider()
+
+    async def extract_captions(url):
+        return []
+
+    fake.extract_captions = extract_captions
+    with pytest.raises(LiveCommandError, match="no official Korean captions"):
+        lms.recording_captions("국제법", "1차시")
+
+
+def test_caption_normalization_rejects_player_javascript_and_error_html():
+    import ku_lms_cli.live as live_mod
+
+    assert live_mod._normalize_caption_item({"text": "var captionScriptList = null;\nfunction init() {}", "source": "player_caption_resource"}) is None
+    assert live_mod._normalize_caption_item({"text": "<html><body>잘못된 요청입니다.</body></html>", "source": "network_caption"}) is None
+
+
+def test_caption_normalization_accepts_vtt_as_plain_text():
+    import ku_lms_cli.live as live_mod
+
+    item = live_mod._normalize_caption_item({"text": "WEBVTT\n\ncue-1\n00:00:00.000 --> 00:00:02.000\n안녕하세요.\n", "format": "vtt"})
+    assert item is not None
+    assert item["text"] == "안녕하세요."
+
+
+def test_caption_normalization_rejects_common_javascript_assignments():
+    import ku_lms_cli.live as live_mod
+
+    assert live_mod._normalize_caption_item({"text": "window.captionScriptList = [];"}) is None
+    assert live_mod._normalize_caption_item({"text": "const captionScriptList = [];"}) is None
+
+
+def test_caption_normalization_rejects_redaction_policy_sensitive_ids():
+    import ku_lms_cli.live as live_mod
+
+    assert live_mod._normalize_caption_item({"text": "학생 번호 12345678"}) is None

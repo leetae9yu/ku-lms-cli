@@ -29,3 +29,6 @@ discovery/
 # OMX/Codex local workflow state
 .omx/
 
+
+# Local CodeGraph index
+.codegraph/

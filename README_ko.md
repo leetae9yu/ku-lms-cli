@@ -119,6 +119,14 @@ ku-lms --json --live recordings list --course "국제법"
 ku-lms --json --live recordings play --course "국제법" --title "1차시" --until-end
 ```
 
+공식 자막/스크립트가 제공되는 녹화 강의의 자막을 txt로 저장:
+
+```bash
+ku-lms --json --live recordings captions --course "국제법" --title "4주차 1차시"
+```
+
+`--title`을 생략하면 해당 과목의 녹화 강의 중 공식 한국어 자막이 발견되는 첫 영상을 찾아 저장합니다. `--output`을 생략하면 `downloads/p-q-yyyymmdd-hhmmdd.txt`에 저장합니다. 여기서 `p`는 주차, `q`는 차시입니다. `--output`을 지정하면 지정한 경로를 사용하되 확장자는 항상 `.txt`로 맞춥니다.
+
 일정 시간 재생/유지:
 
 ```bash
@@ -175,7 +183,7 @@ ku-lms --json recordings keepalive --id sample-recording
 - 과목 목록 조회
 - 과목별 과제/마감일 조회
 - 과목별 녹화 강의 목록 조회
-- 녹화 강의 재생/keepalive
+- 녹화 강의 재생/keepalive/공식 자막 txt 추출
 - 캘린더 upcoming/list/todo 조회
 - 캘린더 `.ics` feed를 안전하게 클립보드/브라우저/Google Calendar로 전달
 
@@ -194,7 +202,7 @@ ku-lms --json recordings keepalive --id sample-recording
 - 로그인 세션 생성
 - 읽기 전용 조회
 - 자료 다운로드 scaffold
-- 녹화 강의 재생/keepalive
+- 녹화 강의 재생/keepalive/공식 자막 txt 추출
 - 캘린더 upcoming/list/todo 조회
 - 캘린더 `.ics` feed를 안전하게 클립보드/브라우저/Google Calendar로 전달
 - 녹화 재생으로 인한 시청기록/진도/출석 체크 반영
