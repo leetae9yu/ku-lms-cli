@@ -1,17 +1,18 @@
 ---
 name: ku-lms
-description: "Use when Codex should use the installed `ku-lms` CLI for Korea University LMS tasks: listing courses, checking assignments/deadlines, summarizing remaining work, listing calendar events/todos, safely copying/opening the calendar feed, listing recorded lectures, or playing/keeping alive recorded lectures. Also use when a user asks natural-language LMS questions such as 공학수학 과제 확인, 국제법 영상 목록, 남은 과제 뭐 있어, or 녹화 강의 틀어줘. Do not use for assignment submission, uploads, comments, edits, deletes, enrollment changes, or any LMS-mutating action."
+description: "Use when Codex should use the installed `ku-lms` CLI for Korea University LMS tasks: listing courses, checking assignments/deadlines, summarizing remaining work, listing calendar events/todos, safely copying/opening the calendar feed, listing recorded lectures, playing/keeping alive recorded lectures, extracting official Korean recording captions, or uploading generated caption txt files to the user's Google Drive caption folder. Also use when a user asks natural-language LMS questions such as 공학수학 과제 확인, 국제법 영상 목록, 남은 과제 뭐 있어, 녹화 강의 틀어줘, or n주차 영상 자막 추출 ㄱㄱ. Do not use for assignment submission, LMS uploads, comments, edits, deletes, enrollment changes, or any LMS-mutating action."
 ---
 
 # KU LMS CLI
 
-Use the installed `ku-lms` command as the execution surface for KU LMS read-only queries and recording playback. Keep the CLI as source of truth; this skill only maps natural-language requests to safe CLI usage.
+Use the installed `ku-lms` command as the execution surface for KU LMS read-only queries, recording playback, and official caption extraction. Keep the CLI as source of truth; this skill only maps natural-language requests to safe CLI usage. The local helper script in `scripts/international_law_captions_to_drive.py` extracts generated caption `.txt` files and uploads them to the user's Google Drive folder `국제법/자막 모음` when `gws` is installed; if `gws` is missing, it still saves local transcripts and reports the Drive upload as skipped.
 
 ## Safety contract
 
 - Use live mode for real LMS data: `ku-lms --json --live ...`.
 - Never print credentials, cookies, tokens, headers, raw launch URLs, raw course IDs, SSO/SAML/OAuth/LTI params, or emails.
-- Do not automate assignment submission, uploads, comments, posts, edits, deletes, marks, enrollments, or other mutating LMS actions.
+- Do not automate assignment submission, LMS uploads, comments, posts, edits, deletes, marks, enrollments, or other mutating LMS actions.
+- User-authorized Google Drive uploads are allowed only for generated caption `.txt` files, defaulting to Drive path `국제법/자막 모음`; do not print Drive OAuth material, raw file IDs, raw URLs, or folder IDs. If `gws` is not installed or not on `PATH`, skip upload and complete local caption extraction instead.
 - If the user asks for a forbidden action, refuse briefly and offer read-only alternatives such as checking deadline/status or downloading/viewing materials.
 - Recording `play`/`keepalive` can update viewing progress, attendance, or watch history. Only run playback commands when the user directly asks to play/keep alive/complete a recording; otherwise list recordings or describe capability.
 - Prefer concise Korean summaries when the user writes Korean.
@@ -35,7 +36,7 @@ If config is missing, tell the user to create `~/.config/ku-lms-cli/KU_LMS.env` 
 
 ## Workflow
 
-1. Identify intent: courses, assignments/deadlines, calendar upcoming/todo/feed, recordings list, playback/keepalive, or status.
+1. Identify intent: courses, assignments/deadlines, calendar upcoming/todo/feed, recordings list, playback/keepalive, caption extraction, caption-to-Drive upload, or status.
 2. Choose the narrowest CLI command.
 3. Run with `--json --live` for real LMS data unless the user explicitly wants fixture/sample mode.
 4. Read the JSON and summarize the relevant fields; do not dump raw JSON unless requested.
@@ -87,6 +88,29 @@ Keep a recording open for a bounded duration:
 ku-lms --json --live recordings keepalive --course "국제법" --title "1주차 4차시" --seconds 30
 ```
 
+Extract official Korean captions from a recording and save them as `.txt`:
+
+```bash
+ku-lms --json --live recordings captions --course "국제법" --title "4주차 1차시"
+```
+
+If `--output` is omitted, the CLI saves Korean captions to `downloads/p-q-yyyymmdd-hhmmdd.txt`, where `p` is week and `q` is class session. If `--output` is supplied, the path is respected but coerced to `.txt`. Summarize `saved_to`, `track_count`, and `caption_language`; do not print raw caption text unless the user explicitly asks to read the generated txt file.
+
+
+Extract International Law captions and upload generated `.txt` files to Google Drive `국제법/자막 모음`:
+
+```bash
+/home/opc/.codex/skills/ku-lms/scripts/international_law_captions_to_drive.py --week 4 --session 1
+```
+
+For a whole week, omit `--session`:
+
+```bash
+/home/opc/.codex/skills/ku-lms/scripts/international_law_captions_to_drive.py --week 4
+```
+
+The helper lists the course recordings, downloads official Korean captions with `ku-lms`, and saves local files as `downloads/p-q-yyyymmdd-hhmmdd.txt`. When `gws` is installed, it resolves the Drive folder and uploads each `.txt` to `국제법/자막 모음`; when `gws` is missing, it skips Drive upload and still completes local extraction. Report only filenames/counts, upload-skipped status, and redacted ID tails; do not print transcript text, Drive URLs, full file IDs, OAuth tokens, or raw LMS launch URLs. Use `--dry-run` to verify selected recordings without downloading/uploading, and `--check-drive` to verify the Drive folder mapping or no-`gws` fallback.
+
 Use `--timeout 120` when live browser operations need more time. Use `--headful` only for local debugging when a visible browser is useful.
 
 ## Natural-language mapping examples
@@ -99,6 +123,9 @@ Use `--timeout 120` when live browser operations need more time. Use `--headful`
 - "구글 캘린더 연동" or "캘린더 피드 복사" → run calendar feed with `--copy` or `--open-google`; do not print the raw feed URL.
 - "국제법 영상 목록" → run recordings list for `국제법`; print module/title list.
 - "국제법 1주차 4차시 끝까지 재생" → run recordings play with `--until-end` and summarize playback evidence.
+- "국제법 4주차 1차시 자막 저장" → run recordings captions; report the generated Korean `.txt` path.
+- "4주차 1차시 영상 자막 추출 ㄱㄱ" or "국제법 4주차 1차시 자막 업로드" → run `scripts/international_law_captions_to_drive.py --week 4 --session 1`; report generated/uploaded filename(s).
+- "4주차 영상 자막 추출 ㄱㄱ" → run `scripts/international_law_captions_to_drive.py --week 4`; process every 국제법 recording in that week and upload each `.txt` to Drive.
 
 ## Output style
 
@@ -125,3 +152,5 @@ For no remaining work:
 - Browser/Chrome not found: set `KU_LMS_CHROME=/path/to/chrome-or-headless_shell`.
 - Course query ambiguous: run `ku-lms --json --live courses`, then retry with a more exact course name substring.
 - Live timeout: retry once with `--timeout 180`; if it still fails, report the redacted error.
+- Drive upload check: run `scripts/international_law_captions_to_drive.py --week <n> --check-drive`; if `gws` is unavailable, the command should return `drive_available: false` and uploads will be skipped while local extraction remains available. If `gws` is available but the check fails, `gws` auth or the `국제법/자막 모음` folder mapping needs repair.
+- Week-only caption extraction intentionally processes every matching `n주차` recording; use `--session <q>` for one `q차시` only.

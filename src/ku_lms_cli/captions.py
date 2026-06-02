@@ -12,5 +12,5 @@ def is_korean_caption_track(track: dict[str, Any]) -> bool:
     return (
         normalized_language in {"ko", "kor", "kr", "ko-kr"}
         or normalized_language.startswith("ko-")
-        or any(token in f"{language} {label}" for token in ("korean", "한국", "한글"))
+        or any(token in f"{language} {label}" for token in ("korean", "한국", "한글", "국문"))
     )

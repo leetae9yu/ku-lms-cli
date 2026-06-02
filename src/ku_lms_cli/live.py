@@ -852,7 +852,9 @@ class CdpBrowserSession:
         await self.goto(url)
         await self._open_external_tool_content()
         await self._start_media_playback()
-        await asyncio.sleep(1.5)
+        await asyncio.sleep(10.0)
+        await self._open_caption_panel()
+        await asyncio.sleep(1.0)
         dom_captions = await self.evaluate(_CAPTION_EXTRACTION_SCRIPT, timeout=min(self.options.timeout_seconds, 30))
         await asyncio.sleep(0.5)
         await client.drain_events()
@@ -871,6 +873,22 @@ class CdpBrowserSession:
             await self.evaluate(
                 r"""
                 (() => {
+                  const textOf = (el) => String((el && (el.innerText || el.textContent || el.value || el.getAttribute('aria-label') || el.title)) || '').trim().replace(/\s+/g, ' ');
+                  const click = (el) => {
+                    try {
+                      el.dispatchEvent(new MouseEvent('mouseover', {bubbles: true, cancelable: true, view: window}));
+                      el.dispatchEvent(new MouseEvent('mousedown', {bubbles: true, cancelable: true, view: window}));
+                      el.click();
+                      el.dispatchEvent(new MouseEvent('mouseup', {bubbles: true, cancelable: true, view: window}));
+                      return true;
+                    } catch (_) {
+                      return false;
+                    }
+                  };
+                  const playButton = document.querySelector('.vc-front-screen-play-btn, .vc-front-mixed-play-btn, .vc-front-multi-play-btn, .vc-pctrl-play-pause-btn, .vjs-play-control, .jw-icon-playback')
+                    || Array.from(document.querySelectorAll('button,a,[role="button"],input[type="button"],div[class*="play"]'))
+                      .find((el) => /재생|play/i.test(textOf(el)) || /(?:^|\s)(?:vjs-play-control|jw-icon-playback|vc-pctrl-play-pause-btn|vc-front-screen-play-btn)(?:\s|$)/i.test(String(el.className || '')));
+                  if (playButton) click(playButton);
                   for (const video of Array.from(document.querySelectorAll('video'))) {
                     try {
                       video.muted = true;
@@ -883,6 +901,13 @@ class CdpBrowserSession:
                 """,
                 timeout=10,
             )
+        except LiveCommandError:
+            return
+
+    async def _open_caption_panel(self) -> None:
+        """Click player caption/script controls so lazy caption APIs are populated."""
+        try:
+            await self.evaluate(_OPEN_CAPTION_PANEL_SCRIPT, timeout=15)
         except LiveCommandError:
             return
 
@@ -1168,6 +1193,52 @@ _EXTERNAL_TOOL_OPEN_SCRIPT = r"""
 """
 
 
+_OPEN_CAPTION_PANEL_SCRIPT = r"""
+(async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const textOf = (el) => String((el && (el.innerText || el.textContent || el.value || el.getAttribute('aria-label') || el.getAttribute('data-title') || el.title)) || '').trim().replace(/\s+/g, ' ');
+  const click = async (el) => {
+    try {
+      el.scrollIntoView && el.scrollIntoView({block: 'center', inline: 'center'});
+      for (const type of ['mouseover', 'mouseenter', 'pointerdown', 'mousedown', 'click', 'mouseup', 'pointerup']) {
+        el.dispatchEvent(new MouseEvent(type, {bubbles: true, cancelable: true, view: window}));
+      }
+      if (typeof el.click === 'function') el.click();
+      await wait(350);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  };
+  const clicked = [];
+  const enableSelector = async (name, selector, onClass) => {
+    const el = document.querySelector(selector);
+    if (!el) return false;
+    const classes = String(el.className || '');
+    if (onClass && classes.includes(onClass)) {
+      clicked.push(name + ':already-on');
+      return true;
+    }
+    if (await click(el)) clicked.push(name + ':' + textOf(el).slice(0, 30));
+    return true;
+  };
+
+  await enableSelector('caption-script', '.vc-pctrl-caption-script-btn', 'vc-pctrl-caption-script-on');
+  await wait(500);
+  await enableSelector('media-script', '.vc-pctrl-media-script-btn', 'vc-pctrl-media-script-on');
+  await wait(500);
+
+  try {
+    if (window.showViewerCaptionScript) window.showViewerCaptionScript();
+    if (window.initializeCaptionScriptUI) window.initializeCaptionScriptUI();
+    if (window.setCaptionScriptList) window.setCaptionScriptList();
+  } catch (_) {}
+
+  return {clicked, hasVideo: !!document.querySelector('video'), url: location.href};
+})()
+"""
+
+
 _CAPTION_EXTRACTION_SCRIPT = r"""
 (async () => {
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -1215,6 +1286,12 @@ _CAPTION_EXTRACTION_SCRIPT = r"""
         await Promise.race([
           new Promise((resolve) => uniPlayerConfig.organizeCurrStoryPlayingInfo(resolve)),
           wait(5000),
+        ]);
+      }
+      if (window.uniPlayerConfig && uniPlayerConfig.parseClosedCaption) {
+        await Promise.race([
+          new Promise((resolve) => uniPlayerConfig.parseClosedCaption(resolve)),
+          wait(10000),
         ]);
       }
       const list = window.GetCaptionList ? GetCaptionList() : (window.uniPlayerConfig && uniPlayerConfig.getClosedCaptionList && uniPlayerConfig.getClosedCaptionList());
@@ -1267,10 +1344,39 @@ _CAPTION_EXTRACTION_SCRIPT = r"""
       } catch (_) {}
     }
   };
+  const scrapeCaptionScriptList = () => {
+    const roots = [document];
+    for (const el of Array.from(document.querySelectorAll('*'))) {
+      if (el.shadowRoot) roots.push(el.shadowRoot);
+    }
+    for (const root of roots) {
+      const items = Array.from(root.querySelectorAll('#cs-script-list .cs-script-item, .cs-script-item'));
+      const lines = [];
+      for (const item of items) {
+        const textEl = item.querySelector && item.querySelector('.cs-script-item-text');
+        const timeEl = item.querySelector && item.querySelector('.cs-script-item-time');
+        const text = String((textEl && (textEl.innerText || textEl.textContent)) || '').trim().replace(/\s+/g, ' ');
+        const time = String((timeEl && (timeEl.innerText || timeEl.textContent)) || '').trim();
+        if (!text) continue;
+        lines.push(time ? `[${time}] ${text}` : text);
+      }
+      if (lines.length) {
+        out.push({
+          source: 'caption_script_dom',
+          label: '한국어 스크립트',
+          language: 'ko',
+          format: 'txt',
+          text: lines.join('\n') + '\n',
+        });
+      }
+    }
+  };
   await openPlayerCaptionScript();
+  scrapeCaptionScriptList();
   await fetchTrackElements();
   await captureTrackCues();
   await fetchCaptionResources();
+  scrapeCaptionScriptList();
   return out.map((item) => {
     if (item.cues && !item.text) {
       item.text = cuesToVtt(item.cues);

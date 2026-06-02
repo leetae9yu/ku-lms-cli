@@ -270,6 +270,12 @@ def test_recording_captions_cli_saves_only_korean_track_with_week_session_timest
     assert saved_file.read_text(encoding="utf-8") == "한국어 자막\n"
 
 
+def test_korean_caption_track_accepts_kukmun_label():
+    from ku_lms_cli.captions import is_korean_caption_track
+
+    assert is_korean_caption_track({"label": "14-1 국문", "language": "14-1 국문"}) is True
+
+
 def test_recording_captions_cli_requires_korean_track(tmp_path, capsys):
     class NonKoreanCaptionProvider(FakeLiveProvider):
         def recording_captions(self, course, title=""):
