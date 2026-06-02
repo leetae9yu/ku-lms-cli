@@ -22,8 +22,6 @@ from typing import Any
 
 FOLDER_MIME = "application/vnd.google-apps.folder"
 DEFAULT_COURSE = "국제법"
-DEFAULT_PARENT_FOLDER = "국제법"
-DEFAULT_CAPTION_FOLDER = "자막 모음"
 
 
 @dataclass(frozen=True)
@@ -84,26 +82,49 @@ def drive_list(q: str) -> list[dict[str, Any]]:
     return list(data.get("files") or [])
 
 
-def resolve_caption_folder(parent_name: str, folder_name: str) -> DriveFolder:
-    parents = drive_list(f"name = '{escape_drive_q(parent_name)}' and mimeType = '{FOLDER_MIME}' and trashed = false")
-    matches: list[DriveFolder] = []
-    for parent in parents:
-        parent_id = str(parent.get("id") or "")
-        if not parent_id:
-            continue
-        children = drive_list(
-            f"name = '{escape_drive_q(folder_name)}' and mimeType = '{FOLDER_MIME}' and '{parent_id}' in parents and trashed = false"
+def resolve_drive_path(path: str) -> DriveFolder:
+    parts = [part.strip() for part in path.split("/") if part.strip()]
+    if not parts:
+        raise RuntimeError("Drive destination path is empty")
+
+    candidates: list[DriveFolder] = [DriveFolder(id="", name="")]
+    for part in parts:
+        next_candidates: list[DriveFolder] = []
+        for parent in candidates:
+            q = f"name = '{escape_drive_q(part)}' and mimeType = '{FOLDER_MIME}' and trashed = false"
+            if parent.id:
+                q += f" and '{parent.id}' in parents"
+            for folder in drive_list(q):
+                folder_id = str(folder.get("id") or "")
+                if folder_id:
+                    next_candidates.append(
+                        DriveFolder(id=folder_id, name=str(folder.get("name") or part), parent_tail=parent.id[-6:] if parent.id else "")
+                    )
+        candidates = next_candidates
+        if not candidates:
+            raise RuntimeError(f"Drive folder not found: {path}")
+
+    if len(candidates) > 1:
+        tails = ", ".join(
+            f"...{folder.id[-6:]}" + (f" under ...{folder.parent_tail}" if folder.parent_tail else "")
+            for folder in candidates
         )
-        for child in children:
-            child_id = str(child.get("id") or "")
-            if child_id:
-                matches.append(DriveFolder(id=child_id, name=str(child.get("name") or folder_name), parent_tail=parent_id[-6:]))
-    if not matches:
-        raise RuntimeError(f"Drive folder not found: {parent_name}/{folder_name}")
-    if len(matches) > 1:
-        tails = ", ".join(f"...{m.id[-6:]} under ...{m.parent_tail}" for m in matches)
-        raise RuntimeError(f"Drive folder is ambiguous: {parent_name}/{folder_name} ({tails})")
-    return matches[0]
+        raise RuntimeError(f"Drive folder is ambiguous: {path} ({tails})")
+    return candidates[0]
+
+
+def resolve_caption_folder(parent_name: str, folder_name: str) -> DriveFolder:
+    return resolve_drive_path(f"{parent_name}/{folder_name}")
+
+
+def drive_destination(args: argparse.Namespace) -> str | None:
+    if args.drive_path:
+        return args.drive_path.strip()
+    if args.drive_parent or args.drive_folder:
+        if not args.drive_parent or not args.drive_folder:
+            raise RuntimeError("Both --drive-parent and --drive-folder are required when either is provided")
+        return f"{args.drive_parent.strip()}/{args.drive_folder.strip()}"
+    return None
 
 
 def escape_drive_q(value: str) -> str:
@@ -216,8 +237,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--week", type=int, required=True, help="p in p주차")
     parser.add_argument("--session", type=int, help="q in q차시. Omit to process every recording in the week.")
     parser.add_argument("--course", default=DEFAULT_COURSE)
-    parser.add_argument("--drive-parent", default=DEFAULT_PARENT_FOLDER)
-    parser.add_argument("--drive-folder", default=DEFAULT_CAPTION_FOLDER)
+    parser.add_argument("--drive-path", help='Google Drive folder path to upload into, e.g. "국제법/자막 모음". Required for upload when gws is available.')
+    parser.add_argument("--drive-parent", help="Backward-compatible two-level Drive parent folder name; use with --drive-folder.")
+    parser.add_argument("--drive-folder", help="Backward-compatible two-level Drive child folder name; use with --drive-parent.")
     parser.add_argument("--downloads-dir", default="downloads")
     parser.add_argument("--timeout", type=int, default=120)
     parser.add_argument("--headful", action="store_true", help="Use a visible Chrome window for players that fail in headless mode.")
@@ -233,16 +255,21 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("ku-lms is not installed or not on PATH")
 
     gws_available = shutil.which("gws") is not None
-    folder = resolve_caption_folder(args.drive_parent, args.drive_folder) if gws_available else None
+    destination = drive_destination(args)
+    folder = resolve_drive_path(destination) if gws_available and destination else None
+    missing_destination_reason = "Drive destination not provided; ask the user where to save and pass --drive-path"
     if args.check_drive:
         print(json.dumps({
             "ok": True,
             "drive_available": gws_available,
-            "drive_folder": f"{args.drive_parent}/{args.drive_folder}",
+            "drive_folder": destination or "",
+            "needs_drive_destination": bool(gws_available and not destination),
             "folder_id_tail": folder.id[-6:] if folder else "",
-            "upload_skipped": None if gws_available else "gws is not installed or not on PATH",
+            "upload_skipped": None if folder else ("gws is not installed or not on PATH" if not gws_available else missing_destination_reason),
         }, ensure_ascii=False))
         return 0
+    if gws_available and not destination:
+        raise SystemExit(missing_destination_reason)
 
     recordings = list_recordings(args.course, args.timeout)
     selected = select_recordings(recordings, args.week, args.session)
@@ -264,9 +291,10 @@ def main(argv: list[str] | None = None) -> int:
             "ok": True,
             "dry_run": True,
             "drive_available": gws_available,
-            "drive_folder": f"{args.drive_parent}/{args.drive_folder}",
+            "drive_folder": destination or "",
+            "needs_drive_destination": bool(gws_available and not destination),
             "folder_id_tail": folder.id[-6:] if folder else "",
-            "upload_skipped": None if gws_available else "gws is not installed or not on PATH",
+            "upload_skipped": None if folder else ("gws is not installed or not on PATH" if not gws_available else missing_destination_reason),
             "selected": [{"week": args.week, "session": q, "title": title, "output": str(path)} for _, q, title, path in planned],
         }, ensure_ascii=False, indent=2))
         return 0
@@ -281,7 +309,7 @@ def main(argv: list[str] | None = None) -> int:
             "title": title,
             "local_file": str(file_path),
             "drive_file": upload,
-            "upload_skipped": None if upload else "gws is not installed or not on PATH",
+            "upload_skipped": None if upload else ("gws is not installed or not on PATH" if not gws_available else missing_destination_reason),
             "caption_language": captions.get("caption_language"),
             "track_count": captions.get("track_count"),
         })
@@ -291,7 +319,7 @@ def main(argv: list[str] | None = None) -> int:
         "course": args.course,
         "saved_count": len(results),
         "drive_available": gws_available,
-        "drive_folder": f"{args.drive_parent}/{args.drive_folder}",
+        "drive_folder": destination or "",
         "uploaded_count": sum(1 for item in results if item.get("drive_file")),
         "uploads": results,
     }, ensure_ascii=False, indent=2))

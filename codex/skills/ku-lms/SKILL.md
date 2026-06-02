@@ -5,14 +5,14 @@ description: "Use when Codex should use the installed `ku-lms` CLI for Korea Uni
 
 # KU LMS CLI
 
-Use the installed `ku-lms` command as the execution surface for KU LMS read-only queries, recording playback, and official caption extraction. Keep the CLI as source of truth; this skill only maps natural-language requests to safe CLI usage. The local helper script in `scripts/international_law_captions_to_drive.py` extracts generated caption `.txt` files and uploads them to the user's Google Drive folder `국제법/자막 모음` when `gws` is installed; if `gws` is missing, it still saves local transcripts and reports the Drive upload as skipped.
+Use the installed `ku-lms` command as the execution surface for KU LMS read-only queries, recording playback, and official caption extraction. Keep the CLI as source of truth; this skill only maps natural-language requests to safe CLI usage. The local helper script in `scripts/international_law_captions_to_drive.py` extracts generated caption `.txt` files. When `gws` is installed, ask the user where in Google Drive to save the generated files before uploading, then pass that destination with `--drive-path`; if `gws` is missing, save local transcripts and report the Drive upload as skipped.
 
 ## Safety contract
 
 - Use live mode for real LMS data: `ku-lms --json --live ...`.
 - Never print credentials, cookies, tokens, headers, raw launch URLs, raw course IDs, SSO/SAML/OAuth/LTI params, or emails.
 - Do not automate assignment submission, LMS uploads, comments, posts, edits, deletes, marks, enrollments, or other mutating LMS actions.
-- User-authorized Google Drive uploads are allowed only for generated caption `.txt` files, defaulting to Drive path `국제법/자막 모음`; do not print Drive OAuth material, raw file IDs, raw URLs, or folder IDs. If `gws` is not installed or not on `PATH`, skip upload and complete local caption extraction instead.
+- User-authorized Google Drive uploads are allowed only for generated caption `.txt` files; do not print Drive OAuth material, raw file IDs, raw URLs, or folder IDs. If `gws` is installed and the user has not already specified a Drive folder, ask exactly one concise question for the destination path (example: `국제법/자막 모음`) before uploading, then pass it as `--drive-path`. If `gws` is not installed or not on `PATH`, skip upload and complete local caption extraction instead.
 - If the user asks for a forbidden action, refuse briefly and offer read-only alternatives such as checking deadline/status or downloading/viewing materials.
 - Recording `play`/`keepalive` can update viewing progress, attendance, or watch history. Only run playback commands when the user directly asks to play/keep alive/complete a recording; otherwise list recordings or describe capability.
 - Prefer concise Korean summaries when the user writes Korean.
@@ -37,7 +37,7 @@ If config is missing, tell the user to create `~/.config/ku-lms-cli/KU_LMS.env` 
 ## Workflow
 
 1. Identify intent: courses, assignments/deadlines, calendar upcoming/todo/feed, recordings list, playback/keepalive, caption extraction, caption-to-Drive upload, or status.
-2. Choose the narrowest CLI command.
+2. Choose the narrowest CLI command. For caption upload requests, first run `scripts/international_law_captions_to_drive.py --week <n> --check-drive`; if it reports `drive_available: true` and `needs_drive_destination: true`, ask the user where to save the files in Drive and use that answer as `--drive-path`.
 3. Run with `--json --live` for real LMS data unless the user explicitly wants fixture/sample mode.
 4. Read the JSON and summarize the relevant fields; do not dump raw JSON unless requested.
 5. For assignment checks, highlight `remaining_candidate`, `unsubmitted`, `missing`, lock status, and due time.
@@ -97,19 +97,19 @@ ku-lms --json --live recordings captions --course "국제법" --title "4주차 1
 If `--output` is omitted, the CLI saves Korean captions to `downloads/p-q-yyyymmdd-hhmmdd.txt`, where `p` is week and `q` is class session. If `--output` is supplied, the path is respected but coerced to `.txt`. Summarize `saved_to`, `track_count`, and `caption_language`; do not print raw caption text unless the user explicitly asks to read the generated txt file.
 
 
-Extract International Law captions and upload generated `.txt` files to Google Drive `국제법/자막 모음`:
+Extract International Law captions and upload generated `.txt` files to a user-chosen Google Drive folder. If `gws` is available and the user has not provided the folder path, ask for it first; then pass it with `--drive-path`:
 
 ```bash
-/home/opc/.codex/skills/ku-lms/scripts/international_law_captions_to_drive.py --week 4 --session 1
+/home/opc/.codex/skills/ku-lms/scripts/international_law_captions_to_drive.py --week 4 --session 1 --drive-path "국제법/자막 모음"
 ```
 
 For a whole week, omit `--session`:
 
 ```bash
-/home/opc/.codex/skills/ku-lms/scripts/international_law_captions_to_drive.py --week 4
+/home/opc/.codex/skills/ku-lms/scripts/international_law_captions_to_drive.py --week 4 --drive-path "국제법/자막 모음"
 ```
 
-The helper lists the course recordings, downloads official Korean captions with `ku-lms`, and saves local files as `downloads/p-q-yyyymmdd-hhmmdd.txt`. When `gws` is installed, it resolves the Drive folder and uploads each `.txt` to `국제법/자막 모음`; when `gws` is missing, it skips Drive upload and still completes local extraction. Report only filenames/counts, upload-skipped status, and redacted ID tails; do not print transcript text, Drive URLs, full file IDs, OAuth tokens, or raw LMS launch URLs. Use `--dry-run` to verify selected recordings without downloading/uploading, and `--check-drive` to verify the Drive folder mapping or no-`gws` fallback.
+The helper lists the course recordings, downloads official Korean captions with `ku-lms`, and saves local files as `downloads/p-q-yyyymmdd-hhmmdd.txt`. When `gws` is installed, it requires an explicit `--drive-path`, resolves that Drive folder, and uploads each `.txt` there; when `gws` is missing, it skips Drive upload and still completes local extraction. Report only filenames/counts, upload-skipped status, and redacted ID tails; do not print transcript text, Drive URLs, full file IDs, OAuth tokens, or raw LMS launch URLs. Use `--dry-run` to verify selected recordings without downloading/uploading, and `--check-drive` to detect whether a Drive destination must be requested or to verify the provided folder mapping.
 
 Use `--timeout 120` when live browser operations need more time. Use `--headful` only for local debugging when a visible browser is useful.
 
@@ -124,8 +124,8 @@ Use `--timeout 120` when live browser operations need more time. Use `--headful`
 - "국제법 영상 목록" → run recordings list for `국제법`; print module/title list.
 - "국제법 1주차 4차시 끝까지 재생" → run recordings play with `--until-end` and summarize playback evidence.
 - "국제법 4주차 1차시 자막 저장" → run recordings captions; report the generated Korean `.txt` path.
-- "4주차 1차시 영상 자막 추출 ㄱㄱ" or "국제법 4주차 1차시 자막 업로드" → run `scripts/international_law_captions_to_drive.py --week 4 --session 1`; report generated/uploaded filename(s).
-- "4주차 영상 자막 추출 ㄱㄱ" → run `scripts/international_law_captions_to_drive.py --week 4`; process every 국제법 recording in that week and upload each `.txt` to Drive.
+- "4주차 1차시 영상 자막 추출 ㄱㄱ" or "국제법 4주차 1차시 자막 업로드" → run `scripts/international_law_captions_to_drive.py --week 4 --check-drive`; if `gws` is available, ask for the Drive folder path, then run with `--week 4 --session 1 --drive-path <answer>`; report generated/uploaded filename(s).
+- "4주차 영상 자막 추출 ㄱㄱ" → run `scripts/international_law_captions_to_drive.py --week 4 --check-drive`; if `gws` is available, ask for the Drive folder path, then process every 국제법 recording in that week with `--drive-path <answer>`; if `gws` is unavailable, process local extraction only.
 
 ## Output style
 
@@ -152,5 +152,5 @@ For no remaining work:
 - Browser/Chrome not found: set `KU_LMS_CHROME=/path/to/chrome-or-headless_shell`.
 - Course query ambiguous: run `ku-lms --json --live courses`, then retry with a more exact course name substring.
 - Live timeout: retry once with `--timeout 180`; if it still fails, report the redacted error.
-- Drive upload check: run `scripts/international_law_captions_to_drive.py --week <n> --check-drive`; if `gws` is unavailable, the command should return `drive_available: false` and uploads will be skipped while local extraction remains available. If `gws` is available but the check fails, `gws` auth or the `국제법/자막 모음` folder mapping needs repair.
+- Drive upload check: run `scripts/international_law_captions_to_drive.py --week <n> --check-drive`; if `gws` is unavailable, the command should return `drive_available: false` and uploads will be skipped while local extraction remains available. If `gws` is available and no folder was provided, the command returns `needs_drive_destination: true`; ask the user for the Drive folder path and retry with `--drive-path <answer>`. If a provided folder fails to resolve, `gws` auth or that folder mapping needs repair.
 - Week-only caption extraction intentionally processes every matching `n주차` recording; use `--session <q>` for one `q차시` only.
