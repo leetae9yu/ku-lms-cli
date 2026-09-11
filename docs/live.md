@@ -26,7 +26,7 @@ PYTHONPATH=src python -m ku_lms_cli.cli --json --live calendar feed --open-googl
 - Assignment submission, upload, post/comment, edit/delete, enrollment, and other LMS-mutating actions remain forbidden and fail closed.
 - Recording playback/keepalive may update LMS viewing progress, attendance, or watch history; this side effect is explicitly accepted for this build.
 - Calendar feed URLs are secret-like iCalendar subscription tokens. `calendar feed --copy`, `--open`, and `--open-google` pass the URL only to the local clipboard/browser and report a redacted URL shape.
-- Browser profiles are temporary local-only directories and are cleaned up after each live command.
+- Browser profiles are temporary local-only directories. A queue keeps its profile until completion, error, or stop; other live commands clean up on return.
 
 ## Browser/runtime notes
 
@@ -37,3 +37,77 @@ export KU_LMS_CHROME=/path/to/chrome-or-headless_shell
 ```
 
 Use `--headful` for debugging the login flow locally. Do not persist raw screenshots, HAR files, cookies, headers, or local/session storage dumps.
+
+
+## Durable recordings runner (POSIX)
+
+`ku-lms --json --live recordings play --all --course "<course>"` detaches a local
+Python process with its own temporary Chrome profile. Startup acknowledges a
+listening control socket, before login/discovery/playback. It does not attach to an
+existing browser, persist launch URLs, invoke an agent, or write LMS completion or
+attendance directly. Ordinary playback can still update the LMS's own watch history.
+
+- One login and one queue discovery per run, including API pagination when needed.
+  API order is preserved. Handouts, unpublished/locked items and modules, future
+  unlock dates, and expired availability windows are excluded. Availability changes
+  after the snapshot stop playback on the resulting access error; no rediscovery or
+  automatic login retry occurs between videos.
+- One browser/page is reused; each recording navigates through its LTI wrapper.
+  Native trusted `ended` advances exactly once. Pause never advances, synthetic ended
+  is ignored, and a non-normal playback rate is an error. No seek or fast-forward is
+  performed. Normal player resume prompts may be accepted.
+- `--all` requires `--live` and `--course`; it cannot combine with `--title`, `--id`, or
+  `--seconds`. Single-video play/keepalive stays foreground and bounded; `--until-end`
+  now requires a native end instead of inferred progress. `--timeout` limits startup
+  and navigation, not the total duration of a queue or an intentional pause.
+- `recordings status` always prints one compact JSON object containing exactly
+  `video`, `position_seconds`, `paused`, `remaining`, `error`. `remaining` includes the
+  current unfinished video. Position is the last native media-event observation,
+  not a fresh browser query. During startup, video/position are null and remaining
+  is zero. With no runner, the same idle shape is returned. Top-level `status` still
+  reports configuration; it is a different command.
+- `recordings stop` cancels playback, closes only the owned browser/profile, and
+  releases the runner. It is idempotent when absent and returns the five-field
+  snapshot. Successful stop exits zero even if the snapshot preserves a prior error.
+- Completion or error closes the browser but leaves the lightweight control process
+  serving its final status and terminal event. Stop it before another `play --all`.
+  An exclusive file lock prevents duplicate runners before opening a browser. Only
+  the lock owner can remove a stale socket after an unclean exit.
+
+The default directory is `${XDG_STATE_HOME:-$HOME/.local/state}/ku-lms-cli/recordings`,
+mode 0700, containing `control.sock` (0600) and `runner.lock`. It is independent of
+other browser sessions or per-agent state directories. All related CLI invocations
+must use the same `XDG_STATE_HOME`. This is process durability across CLI/agent exits,
+not automatic recovery across machine reboot, SIGKILL, or browser crash. A missing
+runner's status is idle, not proof that its old queue completed.
+
+### Terminal notifications
+
+```bash
+ku-lms recordings events
+```
+
+This blocks without polling, then prints a single NDJSON object with `event` plus
+the five status fields. Allowed event values are `queue_complete`, `login_expired`,
+and `playback_error`. Completion exits zero; error events exit one. A late subscriber
+receives the retained terminal event. Explicit stop closes a pending subscription
+without an event (exit zero); per-video transitions and pauses are not notifications.
+There is no chat message, monitor tool, external messaging, or agent-wake integration.
+An external supervisor can consume this command and choose what to notify.
+
+For direct local consumers, send `status\n`, `stop\n`, or `events\n` to the Unix
+socket. Status/stop return one JSON line. Events first acknowledges subscription with
+`{"subscribed":true}`, then returns one terminal JSON line and EOF; the CLI consumes
+that acknowledgement silently. Subscribe and await this acknowledgement before
+triggering an action when coordinating a supervisor. Status/stop do not load config,
+launch a browser, or discover LMS content. No event history is written to disk.
+
+### Offline verification
+
+The suite uses independent Chromium profiles and local generated media, never LMS
+credentials or an existing browser. Set `KU_LMS_CHROME` to an available compatible
+Chromium binary if necessary. The browser/CLI tests cover real native playback,
+pause/resume, synthetic-event rejection, inactive sources, playback error, login
+expiry, terminal replay, and stop. API fixtures cover queue discovery/filtering; a
+separate CLI test verifies detachment and duplicate exclusion with a deliberately
+missing browser binary (no LMS request).

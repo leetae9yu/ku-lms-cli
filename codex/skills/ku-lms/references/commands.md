@@ -15,6 +15,10 @@ ku-lms --json --live calendar feed --open-google
 ku-lms --json --live recordings list --course "<course>"
 ku-lms --json --live recordings play --course "<course>" --title "<title>" --until-end
 ku-lms --json --live recordings keepalive --course "<course>" --title "<title>" --seconds 30
+ku-lms --json --live recordings play --all --course "<course>"
+ku-lms recordings status
+ku-lms recordings events
+ku-lms recordings stop
 ```
 
 Forbidden commands must remain unsupported: `submit`, `upload`, `post`, `comment`, `delete`, `edit`, `write`, `mark`, `enroll`.

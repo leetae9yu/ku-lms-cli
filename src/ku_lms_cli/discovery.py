@@ -12,7 +12,7 @@ from .config import KuLmsConfig
 from .paths import PathPolicy
 from .redaction import redact_data, redact_text
 
-DEFAULT_ENTRY_URL = "https://mylms.korea.ac.kr/accounts/1/external_tools/9?launch_type=global_navigation"
+DEFAULT_ENTRY_URL = "https://canvas.korea.ac.kr/accounts/1/external_tools/9?launch_type=global_navigation"
 FORBIDDEN_OBSERVATION_KEYS = {
     "cookie",
     "cookies",

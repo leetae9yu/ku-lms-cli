@@ -27,15 +27,12 @@ from typing import Any, Protocol
 
 from .captions import is_korean_caption_track
 from .config import KuLmsConfig
+from .errors import LiveCommandError
 from .discovery import DEFAULT_ENTRY_URL
 from .redaction import redact_data, redact_text
 
 CANVAS_ORIGIN = "https://mylms.korea.ac.kr"
-LOGIN_POLL_SECONDS = 45.0
-
-
-class LiveCommandError(RuntimeError):
-    """A safe-to-print live command failure."""
+CANVAS_HOSTS = frozenset({"canvas.korea.ac.kr", "mylms.korea.ac.kr"})
 
 
 @dataclass(frozen=True)
@@ -244,16 +241,17 @@ async def _select_course(session: BrowserSession, query: str) -> dict[str, Any]:
 
 
 async def _recording_candidates(session: BrowserSession, course: dict[str, Any]) -> list[dict[str, Any]]:
-    modules = await session.fetch_json(f"/api/v1/courses/{course['id']}/modules?per_page=100&include[]=items")
-    if not isinstance(modules, list):
-        raise LiveCommandError("modules API returned an unexpected shape")
+    modules = await _fetch_recording_pages(session, f"/api/v1/courses/{course['id']}/modules?per_page=100&include[]=items")
     candidates: list[dict[str, Any]] = []
     for module in modules:
-        if not isinstance(module, dict):
+        if not isinstance(module, dict) or not _recording_accessible(module):
             continue
         module_name = str(module.get("name") or "")
-        for item in module.get("items") or []:
-            if not isinstance(item, dict):
+        items = module.get("items") or []
+        if module.get("items_count", len(items)) > len(items) or ("items" not in module and module.get("items_count") != 0):
+            items = await _fetch_recording_pages(session, f"/api/v1/courses/{course['id']}/modules/{module['id']}/items?per_page=100")
+        for item in items:
+            if not isinstance(item, dict) or not _recording_accessible(item):
                 continue
             title = str(item.get("title") or "")
             item_type = str(item.get("type") or "")
@@ -264,6 +262,41 @@ async def _recording_candidates(session: BrowserSession, course: dict[str, Any])
     if not candidates:
         raise LiveCommandError(f"no recording candidates found for course {course.get('name', '')}")
     return candidates
+
+
+async def _fetch_recording_pages(session: BrowserSession, path: str) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    page = 1
+    while True:
+        data = await session.fetch_json(path if page == 1 else f"{path}&page={page}")
+        if not isinstance(data, list):
+            raise LiveCommandError("recordings API returned an unexpected shape")
+        rows.extend(item for item in data if isinstance(item, dict))
+        if len(data) < 100:
+            return rows
+        page += 1
+
+
+def _recording_accessible(item: dict[str, Any]) -> bool:
+    """Respect Canvas availability metadata; unknown dates fail closed."""
+    details = item.get("content_details") or {}
+    now = datetime.now(timezone.utc)
+    for value in (item, details):
+        if value.get("published") is False or value.get("locked_for_user") or value.get("state") == "locked":
+            return False
+        for key in ("unlock_at", "lock_at"):
+            raw = value.get(key)
+            if not raw:
+                continue
+            try:
+                date = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+            except ValueError:
+                return False
+            if date.tzinfo is None:
+                date = date.replace(tzinfo=timezone.utc)
+            if (key == "unlock_at" and date > now) or (key == "lock_at" and date <= now):
+                return False
+    return True
 
 
 def _select_recording(candidates: list[dict[str, Any]], query: str) -> dict[str, Any]:
@@ -362,8 +395,7 @@ def _public_playback(recording: dict[str, Any], playback: dict[str, Any], *, unt
     stream_seen = bool(playback.get("video_mp4_partial_content_seen", False))
     duration = playback.get("observed_duration_seconds")
     event_completed = bool(playback.get("completed", False))
-    inferred_completed = bool(until_end and stream_seen and duration is not None)
-    completion_basis = "player_event" if event_completed else "stream_duration_observed" if inferred_completed else "not_observed"
+    completion_basis = "player_event" if event_completed else "not_observed"
     return redact_data(
         {
             "module": recording.get("module", ""),
@@ -378,7 +410,7 @@ def _public_playback(recording: dict[str, Any], playback: dict[str, Any], *, unt
                 "duration_changed": bool(events.get("duration_changed", False)),
             },
             "observed_duration_seconds": duration,
-            "completed": event_completed or inferred_completed,
+            "completed": event_completed,
             "completion_basis": completion_basis,
         }
     )
@@ -652,35 +684,40 @@ class CdpBrowserSession:
         self._caption_requests: list[dict[str, str]] = []
 
     async def __aenter__(self) -> "CdpBrowserSession":
-        self._tmp = tempfile.TemporaryDirectory(prefix="ku-lms-cdp-")
-        port = _free_port()
-        chrome = self.options.chrome_path or os.environ.get("KU_LMS_CHROME") or _default_chrome_path()
-        if not chrome:
-            raise LiveCommandError("Chrome/headless_shell executable was not found; set KU_LMS_CHROME")
-        args = [
-            chrome,
-            f"--remote-debugging-port={port}",
-            f"--user-data-dir={self._tmp.name}",
-            "--no-first-run",
-            "--no-default-browser-check",
-            "--disable-background-networking",
-            "--disable-dev-shm-usage",
-            "--no-sandbox",
-        ]
-        if self.options.headless:
-            args.extend(["--headless=new", "--autoplay-policy=no-user-gesture-required"])
-        args.append("about:blank")
-        self._proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, text=True)
-        ws_url = await asyncio.to_thread(_wait_for_page_ws, port, self.options.timeout_seconds)
-        self._client = await _CdpClient.connect(ws_url)
-        await self._client.send("Page.enable")
-        await self._client.send("Runtime.enable")
-        await self._client.send("Network.enable")
         try:
-            await self._client.send("Media.enable")
-        except LiveCommandError:
-            pass
-        return self
+            self._tmp = tempfile.TemporaryDirectory(prefix="ku-lms-cdp-")
+            port = _free_port()
+            chrome = self.options.chrome_path or os.environ.get("KU_LMS_CHROME") or _default_chrome_path()
+            if not chrome:
+                raise LiveCommandError("Chrome/headless_shell executable was not found; set KU_LMS_CHROME")
+            args = [
+                chrome,
+                f"--remote-debugging-port={port}",
+                f"--user-data-dir={self._tmp.name}",
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--disable-background-networking",
+                "--disable-dev-shm-usage",
+                "--no-sandbox",
+            ]
+            if self.options.headless:
+                args.extend(["--headless=new", "--autoplay-policy=no-user-gesture-required"])
+            args.append("about:blank")
+            self._proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, text=True)
+            ws_url = await asyncio.to_thread(_wait_for_page_ws, port, self.options.timeout_seconds)
+            self._client = await _CdpClient.connect(ws_url)
+            await self._client.send("Page.enable")
+            await self._client.send("Runtime.enable")
+            await self._client.send("Network.enable")
+            try:
+                await self._client.send("Media.enable")
+            except LiveCommandError:
+                pass
+            return self
+        except BaseException:
+            # __aexit__ is not called by async-with when entry fails or is cancelled.
+            await self.__aexit__(None, None, None)
+            raise
 
     async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
         if self._client:
@@ -691,12 +728,13 @@ class CdpBrowserSession:
                 self._proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 self._proc.kill()
+                self._proc.wait(timeout=5)
         if self._tmp:
             self._tmp.cleanup()
 
     async def login(self) -> None:
         await self.goto(self.options.entry_url)
-        deadline = time.monotonic() + LOGIN_POLL_SECONDS
+        deadline = time.monotonic() + self.options.timeout_seconds
         last_state = ""
         while time.monotonic() < deadline:
             try:
@@ -716,8 +754,12 @@ class CdpBrowserSession:
                 await asyncio.sleep(2.0)
                 continue
             href = str(state.get("href", "")) if isinstance(state, dict) else ""
-            if "mylms.korea.ac.kr" in href and "login" not in href.casefold() and await self._canvas_session_ready():
-                return
+            parsed_href = urllib.parse.urlparse(href)
+            if parsed_href.hostname in CANVAS_HOSTS and "login" not in parsed_href.path.casefold():
+                if await self._canvas_session_ready():
+                    return
+                await asyncio.sleep(1.0)
+                continue
             if isinstance(state, dict) and state.get("hasPassword"):
                 await self._submit_credentials()
                 await asyncio.sleep(5.0)
@@ -747,15 +789,15 @@ class CdpBrowserSession:
         return result.get("value")
 
     async def fetch_json(self, path_or_url: str) -> Any:
-        url = path_or_url if path_or_url.startswith("http") else f"{CANVAS_ORIGIN}{path_or_url}"
-        expr = json.dumps(url)
+        expr = json.dumps(path_or_url)
         return await self.evaluate(
             f"""
             (async () => {{
+              const url = new URL({expr}, location.origin).href;
               const controller = new AbortController();
               const timer = setTimeout(() => controller.abort(), 20000);
               try {{
-                const r = await fetch({expr}, {{credentials: 'include', signal: controller.signal}});
+                const r = await fetch(url, {{credentials: 'include', signal: controller.signal}});
                 const text = await r.text();
                 if (!r.ok) throw new Error('HTTP ' + r.status);
                 return text ? JSON.parse(text) : null;
@@ -800,19 +842,20 @@ class CdpBrowserSession:
     async def _canvas_session_ready(self) -> bool:
         try:
             value = await self.evaluate(
-                f"""
-                (async () => {{
+                """
+                (async () => {
                   const controller = new AbortController();
                   const timer = setTimeout(() => controller.abort(), 5000);
-                  try {{
-                    const r = await fetch({json.dumps(CANVAS_ORIGIN + '/api/v1/users/self/profile')}, {{credentials: 'include', signal: controller.signal}});
+                  try {
+                    const url = new URL('/api/v1/users/self/profile', location.origin).href;
+                    const r = await fetch(url, {credentials: 'include', signal: controller.signal});
                     return r.ok;
-                  }} catch (_) {{
+                  } catch (_) {
                     return false;
-                  }} finally {{
+                  } finally {
                     clearTimeout(timer);
-                  }}
-                }})()
+                  }
+                })()
                 """,
                 timeout=8,
             )
@@ -821,28 +864,26 @@ class CdpBrowserSession:
             return False
 
     async def play_url(self, url: str, *, until_end: bool = False, seconds: float | None = None) -> dict[str, Any]:
+        from .media import MediaPlayer
+
         self._network_seen = {"video_mp4_partial_content_seen": False}
         self._media_seen = {"play": False, "pause": False, "duration_changed": False}
         self._duration = None
         client = self._require_client()
         client.event_callback = self._on_event
-        await self.goto(url)
-        await self._open_external_tool_content()
-        await asyncio.sleep(2.0)
-        await self.evaluate(_MEDIA_INSTRUMENTATION_SCRIPT)
-        await self.evaluate("window.__kuLmsMediaPlay && window.__kuLmsMediaPlay()")
-        if until_end:
-            await self._wait_until_media_complete(max_seconds=self.options.timeout_seconds)
-        elif seconds:
-            await asyncio.sleep(seconds)
-        else:
-            await asyncio.sleep(5.0)
-        await client.drain_events()
+
+        def update(position: float, paused: bool) -> None:
+            self._media_seen["pause" if paused else "play"] = True
+
+        completed = await MediaPlayer(self).play(
+            url, update, seconds=None if until_end else (seconds or 5.0),
+            timeout=self.options.timeout_seconds if until_end else None,
+        )
         return {
             "video_mp4_partial_content_seen": self._network_seen.get("video_mp4_partial_content_seen", False),
             "media_events": dict(self._media_seen),
             "observed_duration_seconds": self._duration,
-            "completed": bool(self._media_seen.get("pause") and (until_end or self._duration is not None)),
+            "completed": completed,
         }
 
     async def extract_captions(self, url: str) -> list[dict[str, Any]]:
@@ -977,45 +1018,23 @@ class CdpBrowserSession:
             await self.goto(iframe_src)
             await asyncio.sleep(5.0)
 
-    async def _wait_until_media_complete(self, max_seconds: float) -> None:
-        deadline = time.monotonic() + max_seconds
-        client = self._require_client()
-        while time.monotonic() < deadline:
-            await client.drain_events()
-            if self._network_seen.get("video_mp4_partial_content_seen") and self._duration is not None and self._duration <= 2.0:
-                return
-            status = await self.evaluate(
-                """
-                (() => {
-                  const v = document.querySelector('video');
-                  return v ? {paused: v.paused, ended: v.ended, currentTime: v.currentTime || 0, duration: v.duration || null} : null;
-                })()
-                """,
-                timeout=10,
-            )
-            if isinstance(status, dict):
-                duration = status.get("duration")
-                current = status.get("currentTime") or 0
-                if isinstance(duration, (int, float)) and duration > 0:
-                    self._duration = float(duration)
-                    if status.get("ended") or current >= duration - 1:
-                        self._media_seen["pause"] = True
-                        return
-            await asyncio.sleep(2.0)
-
     async def _submit_credentials(self) -> None:
         user = json.dumps(self.config.user_id)
         pwd = json.dumps(self.config.password)
         await self.evaluate(
             f"""
             (() => {{
-              const id = document.querySelector('#one_id') || document.querySelector('input[name="one_id"]') || document.querySelector('input[type="text"]');
-              const pwd = document.querySelector('#password,input[name="user_password"],input[type="password"]');
+              const id = document.querySelector('#ipt_id') || document.querySelector('#one_id') || document.querySelector('input[name="one_id"]') || document.querySelector('input[type="text"]');
+              const pwd = document.querySelector('#ipt_password') || document.querySelector('#password') || document.querySelector('input[name="user_password"]') || document.querySelector('input[type="password"]');
               if (!id || !pwd) return 'missing-inputs';
               id.focus(); id.value = {user}; id.dispatchEvent(new Event('input', {{bubbles:true}})); id.dispatchEvent(new Event('change', {{bubbles:true}}));
               pwd.focus(); pwd.value = {pwd}; pwd.dispatchEvent(new Event('input', {{bubbles:true}})); pwd.dispatchEvent(new Event('change', {{bubbles:true}}));
-              const button = document.querySelector('button[type="submit"],input[type="submit"],button, .login_btn, .btn_login');
-              setTimeout(() => {{ if (button) button.click(); else if (pwd.form) pwd.form.submit(); }}, 0);
+              const button = document.querySelector('button[type="submit"],input[type="submit"],.btn_primary,.login_btn,.btn_login');
+              setTimeout(() => {{
+                if (typeof window.doLogin === 'function') window.doLogin();
+                else if (button) button.click();
+                else if (pwd.form) pwd.form.submit();
+              }}, 0);
               return 'submitted';
             }})()
             """
@@ -1096,81 +1115,79 @@ class CdpBrowserSession:
 
 
 class _CdpClient:
+    """One websocket reader dispatches replies and events, including while idle."""
+
     def __init__(self, websocket: Any) -> None:
         self.websocket = websocket
         self._next_id = 1
         self.event_callback: Any | None = None
+        self._pending: dict[int, asyncio.Future[Any]] = {}
+        self.connected = True
+        self._reader = asyncio.create_task(self._receive())
 
     @classmethod
     async def connect(cls, ws_url: str) -> "_CdpClient":
         try:
-            import websockets  # type: ignore
-        except ImportError as exc:  # pragma: no cover - exercised only when optional dep is absent
+            import websockets
+        except ImportError as exc:
             raise LiveCommandError("live mode requires the 'websockets' package") from exc
         return cls(await websockets.connect(ws_url, max_size=32 * 1024 * 1024))
 
-    async def send(self, method: str, params: dict[str, Any] | None = None, *, timeout: float = 60.0) -> dict[str, Any]:
-        msg_id = self._next_id
-        self._next_id += 1
-        await self.websocket.send(json.dumps({"id": msg_id, "method": method, "params": params or {}}))
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            try:
-                raw = await asyncio.wait_for(self.websocket.recv(), timeout=max(0.1, deadline - time.monotonic()))
-            except asyncio.TimeoutError as exc:
-                raise LiveCommandError(f"CDP command timed out: {method}") from exc
-            message = json.loads(raw)
-            if message.get("id") == msg_id:
-                if "error" in message:
-                    raise LiveCommandError(redact_text(message["error"]))
-                return message.get("result", {})
-            if message.get("method") == "Page.javascriptDialogOpening":
-                await self._accept_dialog()
-            if self.event_callback:
-                self.event_callback(message)
-        raise LiveCommandError(f"CDP command timed out: {method}")
+    async def _receive(self) -> None:
+        try:
+            async for raw in self.websocket:
+                message = json.loads(raw)
+                future = self._pending.get(message.get("id"))
+                if future is not None and not future.done():
+                    if "error" in message:
+                        future.set_exception(LiveCommandError(redact_text(message["error"])))
+                    else:
+                        future.set_result(message.get("result", {}))
+                if message.get("method") == "Page.javascriptDialogOpening":
+                    msg_id = self._next_id
+                    self._next_id += 1
+                    await self.websocket.send(json.dumps({"id": msg_id, "method": "Page.handleJavaScriptDialog", "params": {"accept": True}}))
+                if message.get("method") and self.event_callback:
+                    self.event_callback(message)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # Transport boundary: report through pending calls and event subscription.
+            self._disconnect(LiveCommandError("CDP connection failed: " + type(exc).__name__))
+        finally:
+            self._disconnect(LiveCommandError("CDP connection closed"))
 
-    async def _accept_dialog(self) -> None:
+    def _disconnect(self, error: LiveCommandError) -> None:
+        if not self.connected:
+            return
+        self.connected = False
+        for future in self._pending.values():
+            if not future.done():
+                future.set_exception(error)
+        if self.event_callback:
+            self.event_callback({"method": "CDP.disconnected", "params": {}})
+
+    async def send(self, method: str, params: dict[str, Any] | None = None, *, timeout: float = 60.0) -> dict[str, Any]:
+        if not self.connected:
+            raise LiveCommandError("CDP connection closed")
         msg_id = self._next_id
         self._next_id += 1
-        await self.websocket.send(json.dumps({"id": msg_id, "method": "Page.handleJavaScriptDialog", "params": {"accept": True}}))
+        future = asyncio.get_running_loop().create_future()
+        self._pending[msg_id] = future
+        try:
+            await self.websocket.send(json.dumps({"id": msg_id, "method": method, "params": params or {}}))
+            return await asyncio.wait_for(future, timeout)
+        except asyncio.TimeoutError as exc:
+            raise LiveCommandError(f"CDP command timed out: {method}") from exc
+        finally:
+            self._pending.pop(msg_id, None)
 
     async def drain_events(self) -> None:
-        while True:
-            try:
-                raw = await asyncio.wait_for(self.websocket.recv(), timeout=0.05)
-            except asyncio.TimeoutError:
-                return
-            message = json.loads(raw)
-            if message.get("method") == "Page.javascriptDialogOpening":
-                await self._accept_dialog()
-            if self.event_callback:
-                self.event_callback(message)
+        # A reply is a protocol barrier; there is no second websocket reader or polling.
+        await self.send("Runtime.evaluate", {"expression": "0"})
 
     async def close(self) -> None:
         await self.websocket.close()
-
-
-_MEDIA_INSTRUMENTATION_SCRIPT = r"""
-(() => {
-  if (window.__kuLmsMediaPlay) return true;
-  const attach = () => {
-    const v = document.querySelector('video');
-    if (!v) return false;
-    const emit = (name) => console.log('KU_LMS_MEDIA_EVENT:' + name + ':' + (v.duration || ''));
-    v.addEventListener('play', () => emit('play'));
-    v.addEventListener('pause', () => emit('pause'));
-    v.addEventListener('durationchange', () => emit('duration_changed'));
-    window.__kuLmsMediaPlay = () => v.play().catch(() => false);
-    emit('duration_changed');
-    return true;
-  };
-  if (!attach()) {
-    const timer = setInterval(() => { if (attach()) clearInterval(timer); }, 500);
-  }
-  return true;
-})()
-"""
+        await self._reader
 
 
 _EXTERNAL_TOOL_OPEN_SCRIPT = r"""

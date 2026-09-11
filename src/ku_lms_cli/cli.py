@@ -49,7 +49,8 @@ def build_parser() -> argparse.ArgumentParser:
     assignments.add_argument("--id", dest="item_id", default="sample-assignment-file", help="Attachment id for download")
     assignments.add_argument("--course", default="", help="Course name substring for live mode")
     recordings = sub.add_parser("recordings", help="List/play/keepalive recorded lectures and extract official captions")
-    recordings.add_argument("action", nargs="?", choices=["list", "play", "keepalive", "captions"], default="list")
+    recordings.add_argument("action", nargs="?", choices=["list", "play", "keepalive", "captions", "status", "stop", "events"], default="list")
+    recordings.add_argument("--all", action="store_true", help="Play all accessible recordings in one detached local runner (requires --live and --course)")
     recordings.add_argument("--id", dest="item_id", default="sample-recording", help="Recording id for play/keepalive")
     recordings.add_argument("--course", default="", help="Course name substring for live mode")
     recordings.add_argument("--title", default="", help="Recording title/module substring for live playback")
@@ -206,6 +207,31 @@ def run(argv: list[str] | None = None, live_provider_factory: Any | None = None)
     if not args.command:
         parser.print_help()
         return 0
+    if args.command == "recordings":
+        from .recording_process import control_query, start_runner
+        try:
+            if args.all:
+                if args.action != "play" or not args.global_live or not args.course:
+                    raise LiveCommandError("--all requires --live recordings play --course")
+                if args.title or args.seconds is not None or "--id" in raw_argv or any(arg.startswith("--id=") for arg in raw_argv):
+                    raise LiveCommandError("--all cannot be combined with --id, --title, or --seconds")
+                payload = start_runner(args)
+            elif args.action in {"status", "stop", "events"}:
+                payload = control_query(args.action)
+            else:
+                payload = None
+            if payload is not None:
+                if payload:
+                    print(json.dumps(redact_data(payload), ensure_ascii=False, separators=(",", ":")))
+                return 1 if payload.get("error") and args.action != "stop" else 0
+        except (LiveCommandError, OSError, ValueError) as exc:
+            if args.action in {"status", "stop"}:
+                from .recordings import idle_status
+                failed = idle_status()
+                failed["error"] = redact_text(str(exc))
+                print(json.dumps(failed, ensure_ascii=False, separators=(",", ":")))
+                return 1
+            return _emit({"ok": False, "error": str(exc), "exit_code": 1}, args.json)
     policy = PathPolicy()
     if args.command in {"login", "discover"} or getattr(args, "global_live", False):
         policy.ensure()

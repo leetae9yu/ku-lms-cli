@@ -82,6 +82,26 @@ Play a recording:
 ku-lms --json --live recordings play --course "국제법" --title "1주차 4차시" --until-end
 ```
 
+Play all currently accessible recordings, with no per-video agent calls:
+
+```bash
+ku-lms --json --live recordings play --all --course "국제법"
+ku-lms recordings status
+ku-lms recordings events
+ku-lms recordings stop
+```
+
+The first command detaches one local runner; its response means the control socket
+is ready, not that playback is already verified. Status has exactly `video`,
+`position_seconds`, `paused`, `remaining` (including the current unfinished video),
+and `error`. Status/stop need no login or `--live`. For an authorized whole-course
+playback request, start this queue once instead of issuing one command per video.
+Native `ended` events advance it at normal speed. `events` waits for completion,
+login expiry, or playback error; no chat notification or agent wake integration is
+provided. Do not promise a future chat message unless an external supervisor is
+actually connected. A finished runner retains its result until stopped; never stop
+an unrelated browser/player to make room for it.
+
 Keep a recording open for a bounded duration:
 
 ```bash

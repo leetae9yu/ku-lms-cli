@@ -122,7 +122,7 @@ ku-lms --json status
 - `courses`
 - `materials list` / `materials download`
 - `assignments list` / `assignments deadlines` / attachment download
-- `recordings list` / `recordings play` / `recordings keepalive` / `recordings captions`
+- `recordings list` / `recordings play` / `recordings play --all` / `recordings status` / `recordings stop` / `recordings events` / `recordings keepalive` / `recordings captions`
 - `calendar upcoming` / `calendar list` / `calendar todo` / `calendar feed --copy|--open|--open-google`
 
 ## Forbidden by design
@@ -134,6 +134,28 @@ Commands such as `submit`, `upload`, `post`, `comment`, `delete`, `edit`, and ot
 `--live` uses a temporary local Chrome/CDP session and Canvas read-only endpoints where available. Fixture mode remains the default. Live outputs are intentionally shape-limited: course names, assignment titles/deadlines, calendar event titles/dates, recording titles/modules, playback status, and caption extraction summaries may be printed; raw IDs, launch URLs, calendar feed URLs, cookies, headers, OAuth/SAML/LTI params, emails, credentials, and tokens must not be printed or persisted. See `docs/live.md`.
 
 When official player captions/transcripts are available, `recordings captions` opens the LTI/player wrapper, extracts the LMS-provided Korean caption track, and always saves a normalized `.txt` transcript. Without `--output`, the default filename is `p-q-yyyymmdd-hhmmdd.txt` (`p` = week, `q` = class session). Calendar feed integration uses the LMS iCalendar feed. The raw `.ics` URL is secret-like, so `calendar feed` returns only a redacted shape. Use `--copy`, `--open`, or `--open-google` to pass the feed to the local clipboard/browser without printing it.
+
+## Durable recordings queue
+
+```bash
+ku-lms --json --live recordings play --all --course "국제법"
+ku-lms recordings status
+ku-lms recordings events
+ku-lms recordings stop
+```
+
+`play --all` starts one detached local runner, discovers the accessible queue once,
+then reuses one browser/player at normal speed. Only a native `ended` event advances
+it; pause and approximate duration never count as completion. No agent or LLM is
+called per video. `status` and `stop` are local socket queries, not LMS operations.
+Status is compact JSON with exactly `video`, `position_seconds`, `paused`,
+`remaining` (including the current unfinished video), and `error`.
+
+`events` waits for one terminal event: `queue_complete`, `login_expired`, or
+`playback_error`. This is a supervisor-facing event stream, **not automatic chat
+notification or agent wake integration**. The completed runner retains its final
+status/event until `stop`; stop it before starting another queue. See
+[runner lifecycle and protocol](docs/live.md#durable-recordings-runner-posix).
 
 ## DevTools discovery
 

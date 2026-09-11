@@ -1,7 +1,8 @@
 import pytest
 
 from ku_lms_cli.config import KuLmsConfig
-from ku_lms_cli.live import LiveCommandError, LiveLmsProvider, LiveOptions, _remaining_candidate
+from ku_lms_cli.discovery import DEFAULT_ENTRY_URL
+from ku_lms_cli.live import CANVAS_ORIGIN, CdpBrowserSession, LiveCommandError, LiveLmsProvider, LiveOptions, _remaining_candidate, _run
 
 
 class FakeSession:
@@ -102,6 +103,56 @@ def provider():
     config = KuLmsConfig(user_id="student-id", password="secret-pwd")
     fake = FakeSession()
     return LiveLmsProvider(config, LiveOptions(), session_factory=lambda: fake), fake
+
+
+def test_current_entry_url_keeps_authenticated_canvas_api_origin():
+    assert CANVAS_ORIGIN == "https://mylms.korea.ac.kr"
+    assert DEFAULT_ENTRY_URL == "https://canvas.korea.ac.kr/accounts/1/external_tools/9?launch_type=global_navigation"
+
+
+def test_new_portal_credentials_use_visible_fields_and_page_login_handler():
+    class CapturingSession(CdpBrowserSession):
+        def __init__(self):
+            super().__init__(KuLmsConfig(user_id="student-id", password="secret-pwd"), LiveOptions())
+            self.expression = ""
+
+        async def evaluate(self, expression, *, timeout=None):
+            self.expression = expression
+            return "submitted"
+
+    session = CapturingSession()
+    _run(session._submit_credentials())
+
+    assert "#ipt_id" in session.expression
+    assert "#ipt_password" in session.expression
+    assert "document.querySelector('#ipt_password') ||" in session.expression
+    assert "typeof window.doLogin" in session.expression
+
+
+def test_login_success_query_is_not_treated_as_a_login_page():
+    class ReadySession(CdpBrowserSession):
+        def __init__(self):
+            super().__init__(
+                KuLmsConfig(user_id="student-id", password="secret-pwd"),
+                LiveOptions(timeout_seconds=0.01),
+            )
+
+        async def goto(self, url):
+            return None
+
+        async def evaluate(self, expression, *, timeout=None):
+            return {
+                "href": "https://mylms.korea.ac.kr/?login_success=1",
+                "hasPassword": False,
+            }
+
+        async def _canvas_session_ready(self):
+            return True
+
+        async def _click_login_candidate(self):
+            return None
+
+    _run(ReadySession().login())
 
 
 def test_live_courses_are_public_name_shape_only():
