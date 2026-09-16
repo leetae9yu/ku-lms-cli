@@ -94,6 +94,7 @@ The scaffold includes package metadata, CLI skeleton, config loading, redaction,
 ```bash
 ku-lms --json status
 ku-lms --json --live courses
+ku-lms --json --live workload --as-of 2026-09-13 --lookahead 7 --timezone Asia/Seoul
 
 # Development checkout alternative:
 PYTHONPATH=src python -m ku_lms_cli.cli --json status
@@ -122,6 +123,7 @@ ku-lms --json status
 - `courses`
 - `materials list` / `materials download`
 - `assignments list` / `assignments deadlines` / attachment download
+- `workload --as-of YYYY-MM-DD [--lookahead N] [--timezone IANA_NAME]`
 - `recordings list` / `recordings play` / `recordings play --all` / `recordings status` / `recordings stop` / `recordings events` / `recordings keepalive` / `recordings captions`
 - `calendar upcoming` / `calendar list` / `calendar todo` / `calendar feed --copy|--open|--open-google`
 

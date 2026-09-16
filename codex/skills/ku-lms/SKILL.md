@@ -36,12 +36,13 @@ If config is missing, tell the user to create `~/.config/ku-lms-cli/KU_LMS.env` 
 
 ## Workflow
 
-1. Identify intent: courses, assignments/deadlines, calendar upcoming/todo/feed, recordings list, playback/keepalive, caption extraction, caption-to-Drive upload, or status.
+1. Identify intent: all-course workload, courses, one-course assignments/deadlines, calendar upcoming/todo/feed, recordings list, playback/keepalive, caption extraction, caption-to-Drive upload, or status.
 2. Choose the narrowest CLI command. For caption upload requests, first run `scripts/international_law_captions_to_drive.py --week <n> --check-drive`; if it reports `drive_available: true` and `needs_drive_destination: true`, ask the user where to save the files in Drive and use that answer as `--drive-path`.
 3. Run with `--json --live` for real LMS data unless the user explicitly wants fixture/sample mode.
 4. Read the JSON and summarize the relevant fields; do not dump raw JSON unless requested.
-5. For assignment checks, highlight `remaining_candidate`, `unsubmitted`, `missing`, lock status, and due time.
-6. For recording checks, show module/title only. For playback, report `video_mp4_partial_content_seen`, `observed_duration_seconds`, `completed`, and `completion_basis` if present.
+5. For all-course workload checks, use `workload` directly and summarize `overdue`, `due_today`, and `upcoming`; do not preflight with `status`/`courses` or query each course separately.
+6. For one-course assignment checks, highlight `remaining_candidate`, `unsubmitted`, `missing`, lock status, and due time.
+7. For recording checks, show module/title only. For playback, report `video_mp4_partial_content_seen`, `observed_duration_seconds`, `completed`, and `completion_basis` if present.
 
 ## Command patterns
 
@@ -49,6 +50,12 @@ Courses:
 
 ```bash
 ku-lms --json --live courses
+```
+
+All-course workload in one authenticated browser session:
+
+```bash
+ku-lms --json --live workload --as-of 2026-09-13 --lookahead 7 --timezone Asia/Seoul
 ```
 
 Assignments for a course:
@@ -136,6 +143,7 @@ Use `--timeout 120` when live browser operations need more time. Use `--headful`
 ## Natural-language mapping examples
 
 - "과목 조회" → run courses and print course names.
+- "해야 할 과제 있어?", "남은 거 있음?", or "9월 13일까지 했어야 할 거 있어?" → run workload once for the requested KST date, or today's KST date when omitted; do not run status, courses, calendar, or per-course assignment commands first.
 - "공학수학 과제 확인" → run assignments list for `공학수학`; summarize remaining/missing/unsubmitted first.
 - "국제법 과제 남은 거 있음?" → run assignments list for `국제법`; answer whether any `remaining_candidate` or missing/unsubmitted work exists.
 - "캘린더 일정 보여줘" → run calendar upcoming/list and summarize title/date/course.
@@ -149,7 +157,9 @@ Use `--timeout 120` when live browser operations need more time. Use `--headful`
 
 ## Output style
 
-For assignment summaries, prefer:
+For all-course workload summaries, lead with whether `overdue` or `due_today` is empty, then list `upcoming` by deadline. Do not print the full JSON or enumerate completed assignments.
+
+For one-course assignment summaries, prefer:
 
 ```text
 남은 과제:

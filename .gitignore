@@ -28,6 +28,7 @@ discovery/
 *.mp4
 # OMX/Codex local workflow state
 .omx/
+.omo/
 
 
 # Local CodeGraph index

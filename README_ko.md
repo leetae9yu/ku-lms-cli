@@ -100,6 +100,12 @@ ku-lms --json status
 ku-lms --json --live courses
 ```
 
+전체 과목의 밀린 일·당일 마감·임박 과제를 한 번의 로그인으로 요약:
+
+```bash
+ku-lms --json --live workload --as-of 2026-09-13 --lookahead 7 --timezone Asia/Seoul
+```
+
 특정 과목 과제 조회:
 
 ```bash

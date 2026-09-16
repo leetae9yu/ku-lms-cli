@@ -101,6 +101,19 @@ class FakeLiveProvider:
             "raw_url_printed": False,
         }
 
+    def workload(self, request):
+        assert request.as_of.isoformat() == "2026-09-13"
+        assert request.lookahead_days == 7
+        assert request.timezone.key == "Asia/Seoul"
+        return {
+            "as_of": "2026-09-13",
+            "timezone": "Asia/Seoul",
+            "overdue": [],
+            "due_today": [],
+            "completed_before_cutoff": 1,
+            "upcoming": [{"course": "국제법", "title": "기말 리포트", "due": "2026-09-15 23:59"}],
+        }
+
     def play_recording(self, course, title, *, until_end=False, seconds=None):
         assert course == "국제법"
         assert "1차시" in title
@@ -140,6 +153,32 @@ def test_live_assignments_and_deadlines_cli(tmp_path, capsys):
     assert run(["--env-file", str(env), "--json", "--live", "assignments", "deadlines", "--course", "국제법"], live_provider_factory=fake_live_factory) == 0
     data = parse_json_output(capsys)
     assert data["deadlines"][0]["title"] == "기말 리포트"
+
+
+def test_live_workload_cli_returns_compact_summary(tmp_path, capsys):
+    env = write_env(tmp_path)
+    code = run(
+        [
+            "--env-file",
+            str(env),
+            "--json",
+            "--live",
+            "workload",
+            "--as-of",
+            "2026-09-13",
+            "--lookahead",
+            "7",
+            "--timezone",
+            "Asia/Seoul",
+        ],
+        live_provider_factory=fake_live_factory,
+    )
+    data = parse_json_output(capsys)
+    assert code == 0
+    assert data["completed_before_cutoff"] == 1
+    assert data["upcoming"] == [
+        {"course": "국제법", "title": "기말 리포트", "due": "2026-09-15 23:59"},
+    ]
 
 
 def test_live_recording_list_and_play_cli(tmp_path, capsys):

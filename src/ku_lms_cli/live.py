@@ -542,6 +542,9 @@ def _run(coro: Any) -> Any:
         raise LiveCommandError(redact_text(message)) from exc
 
 
+run_live = _run
+
+
 def _looks_like_caption_response(url: str, mime: str) -> bool:
     lowered_url = url.casefold()
     lowered_mime = mime.casefold()

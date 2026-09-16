@@ -6,6 +6,7 @@ import html
 import json
 import re
 import sys
+from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,7 @@ from .provider import FixtureProvider
 from .live import LiveCommandError, LiveLmsProvider, LiveOptions
 from .redaction import redact_data, redact_text
 from .session import SessionState, write_session_marker
+from .workload import LiveWorkloadProvider, parse_workload_request
 
 FORBIDDEN_COMMANDS = {"submit", "upload", "post", "comment", "delete", "edit", "write", "mark", "enroll"}
 
@@ -65,10 +67,14 @@ def build_parser() -> argparse.ArgumentParser:
     calendar.add_argument("--copy", action="store_true", help="Copy the raw .ics calendar feed URL to the local clipboard without printing it")
     calendar.add_argument("--open", action="store_true", help="Open the raw .ics calendar feed URL in the local default browser without printing it")
     calendar.add_argument("--open-google", action="store_true", help="Open Google Calendar's add-by-URL screen for the feed without printing the feed URL")
+    workload = sub.add_parser("workload", help="Summarize overdue, due-today, and upcoming LMS work")
+    workload.add_argument("--as-of", default="", help="Reference date in YYYY-MM-DD (defaults to today in --timezone)")
+    workload.add_argument("--lookahead", type=int, default=7, help="Upcoming calendar days to include")
+    workload.add_argument("--timezone", default="Asia/Seoul", help="IANA timezone used for deadline buckets")
     return parser
 
 
-def _emit(payload: dict[str, Any], as_json: bool) -> int:
+def _emit(payload: Mapping[str, Any], as_json: bool) -> int:
     safe = redact_data(payload)
     if as_json:
         print(json.dumps(safe, ensure_ascii=False, indent=2, sort_keys=True))
@@ -248,6 +254,16 @@ def run(argv: list[str] | None = None, live_provider_factory: Any | None = None)
         result = run_discovery(config, policy, entry_url=args.entry_url, live=args.live, observation_path=args.devtools_observation)
         return _emit(result, args.json)
     live_mode = bool(getattr(args, "global_live", False))
+    if args.command == "workload":
+        if not live_mode:
+            return _emit({"ok": False, "error": "workload requires --live", "exit_code": 1}, args.json)
+        try:
+            request = parse_workload_request(args.as_of, args.lookahead, args.timezone)
+            options = LiveOptions(headless=not args.headful, timeout_seconds=args.timeout)
+            workload_provider = live_provider_factory(config, options) if live_provider_factory else LiveWorkloadProvider(config, options)
+            return _emit(workload_provider.workload(request), args.json)
+        except LiveCommandError as exc:
+            return _emit({"ok": False, "error": str(exc), "exit_code": 1}, args.json)
     if live_mode:
         options = LiveOptions(headless=not args.headful, timeout_seconds=args.timeout)
         provider = live_provider_factory(config, options) if live_provider_factory else LiveLmsProvider(config, options)
