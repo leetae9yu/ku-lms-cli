@@ -66,6 +66,14 @@ def test_recordings_unwatched_fixture_shape(tmp_path, capsys):
     assert code == 0
     assert set(data["unwatched"][0]) == {"course", "week", "lesson", "title", "attendance_status", "available", "due_at"}
 
+def test_login_session_status_without_session_and_start_requires_live(tmp_path, capsys, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    env = write_env(tmp_path)
+    assert run(["--env-file", str(env), "--json", "session", "status"]) == 0
+    assert parse_json_output(capsys) == {"ok": True, "browser": {"running": False}}
+    assert run(["--env-file", str(env), "--json", "session", "start"]) == 1
+    assert parse_json_output(capsys)["ok"] is False
+
 class FakeLiveProvider:
     def __init__(self):
         self.options = None

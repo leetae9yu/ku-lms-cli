@@ -44,6 +44,7 @@ class LiveOptions:
     headless: bool = True
     timeout_seconds: float = 60.0
     chrome_path: str | None = None
+    attach_port: int | None = None
 
 
 class BrowserSession(Protocol):
@@ -723,12 +724,16 @@ class CdpBrowserSession:
         self._tmp: tempfile.TemporaryDirectory[str] | None = None
         self._proc: subprocess.Popen[str] | None = None
         self._client: _CdpClient | None = None
+        self.port: int | None = None
+        self._attached_target: str | None = None
         self._network_seen: dict[str, bool] = {}
         self._media_seen: dict[str, bool] = {}
         self._duration: float | None = None
         self._caption_requests: list[dict[str, str]] = []
 
     async def __aenter__(self) -> "CdpBrowserSession":
+        if self.options.attach_port is not None:
+            return await self._attach(self.options.attach_port)
         try:
             self._tmp = tempfile.TemporaryDirectory(prefix="ku-lms-cdp-")
             port = _free_port()
@@ -751,24 +756,51 @@ class CdpBrowserSession:
             self._proc = subprocess.Popen(
                 args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, text=True, start_new_session=True
             )
+            self.port = port
             ws_url = await asyncio.to_thread(_wait_for_page_ws, port, self.options.timeout_seconds)
-            self._client = await _CdpClient.connect(ws_url)
-            await self._client.send("Page.enable")
-            await self._client.send("Runtime.enable")
-            await self._client.send("Network.enable")
-            try:
-                await self._client.send("Media.enable")
-            except LiveCommandError:
-                pass
+            await self._connect(ws_url)
             return self
         except BaseException:
             # __aexit__ is not called by async-with when entry fails or is cancelled.
             await self.__aexit__(None, None, None)
             raise
 
+    async def _attach(self, port: int) -> "CdpBrowserSession":
+        """Use a fresh tab in a browser owned by `session start`; only that tab is closed on exit."""
+        self.port = port
+        try:
+            ws_url = await asyncio.to_thread(_create_page, port)
+        except (OSError, urllib.error.URLError) as exc:
+            raise LiveCommandError("login session browser is not reachable; run session stop, then session start") from exc
+        if not ws_url:
+            raise LiveCommandError("login session browser did not open a tab")
+        self._attached_target = ws_url.rsplit("/", 1)[-1]
+        try:
+            await self._connect(ws_url)
+        except BaseException:
+            await self.__aexit__(None, None, None)
+            raise
+        return self
+
+    async def _connect(self, ws_url: str) -> None:
+        self._client = await _CdpClient.connect(ws_url)
+        await self._client.send("Page.enable")
+        await self._client.send("Runtime.enable")
+        await self._client.send("Network.enable")
+        try:
+            await self._client.send("Media.enable")
+        except LiveCommandError:
+            pass
+
     async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
         if self._client:
             await self._client.close()
+        if self._attached_target:
+            # The shared browser may already be gone; its owner then removes everything.
+            with contextlib.suppress(OSError, urllib.error.URLError):
+                await asyncio.to_thread(
+                    urllib.request.urlopen, f"http://127.0.0.1:{self.port}/json/close/{self._attached_target}", timeout=2
+                )
         if self._proc:
             self._proc.terminate()
             try:
@@ -783,6 +815,10 @@ class CdpBrowserSession:
             self._tmp.cleanup()
 
     async def login(self) -> None:
+        if self.options.attach_port is not None:
+            await self.goto(CANVAS_ORIGIN)
+            if await self._canvas_session_ready():
+                return
         await self.goto(self.options.entry_url)
         deadline = time.monotonic() + self.options.timeout_seconds
         last_state = ""
@@ -1562,7 +1598,7 @@ def _wait_for_page_ws(port: int, timeout: float) -> str:
     raise LiveCommandError(f"browser DevTools endpoint did not become ready: {last_error}")
 
 
-def _open_new_page(port: int) -> str:
+def _create_page(port: int) -> str | None:
     base = f"http://127.0.0.1:{port}"
     encoded = urllib.parse.quote("about:blank", safe="")
     for method in ("PUT", "GET"):
@@ -1574,6 +1610,14 @@ def _open_new_page(port: int) -> str:
                 return str(data["webSocketDebuggerUrl"])
         except urllib.error.HTTPError:
             continue
+    return None
+
+
+def _open_new_page(port: int) -> str:
+    created = _create_page(port)
+    if created:
+        return created
+    base = f"http://127.0.0.1:{port}"
     with urllib.request.urlopen(f"{base}/json", timeout=2) as response:  # noqa: S310 - localhost only
         pages = json.loads(response.read().decode("utf-8"))
     for page in pages:

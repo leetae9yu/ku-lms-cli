@@ -39,6 +39,32 @@ export KU_LMS_CHROME=/path/to/chrome-or-headless_shell
 Use `--headful` for debugging the login flow locally. Do not persist raw screenshots, HAR files, cookies, headers, or local/session storage dumps.
 
 
+## Shared login browser (POSIX)
+
+```bash
+ku-lms --json --live session start [--idle-minutes 180]
+ku-lms --json session status
+ku-lms --json session stop
+```
+
+`session start` detaches one process that launches a temporary-profile Chrome, logs in
+once, and replies after login succeeds (or with the login error). While it runs, every
+other `--live` command opens its own tab in that browser, checks the Canvas session,
+and closes only its tab on exit; if the LMS session expired, the normal SSO login runs
+again in that tab. Without a running session, commands launch their own browser as
+before. The detached `recordings play --all` runner still owns a separate browser.
+
+- Control is a Unix socket at `${XDG_STATE_HOME:-$HOME/.local/state}/ku-lms-cli/session/control.sock`
+  (directory 0700, socket 0600) with an exclusive lock against duplicates. It answers
+  only `endpoint`, `status`, and `stop`; no cookies, tokens, or profile data are written
+  outside the temporary profile.
+- The browser's DevTools port listens on 127.0.0.1 for the session's lifetime. Any
+  local process of the same machine can reach it, so use sessions only on single-user
+  machines and stop them when done.
+- The session closes the browser and removes its profile on `stop`, SIGTERM, or after
+  `--idle-minutes` without a command using it. Output uses the `browser` key with
+  `running`, `started_at`, `last_used_at`, and `idle_timeout_seconds`.
+
 ## Durable recordings runner (POSIX)
 
 `ku-lms --json --live recordings play --all --course "<course>"` detaches a local

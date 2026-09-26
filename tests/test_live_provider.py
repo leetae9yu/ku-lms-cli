@@ -178,6 +178,27 @@ def test_login_success_query_is_not_treated_as_a_login_page():
     _run(ReadySession().login())
 
 
+def test_attached_login_reuses_live_canvas_session_without_sso():
+    class AttachedSession(CdpBrowserSession):
+        def __init__(self):
+            super().__init__(KuLmsConfig(user_id="student-id", password="secret-pwd"), LiveOptions(attach_port=9))
+            self.visited = []
+
+        async def goto(self, url):
+            self.visited.append(url)
+
+        async def _canvas_session_ready(self):
+            return True
+
+        async def evaluate(self, expression, *, timeout=None):
+            raise AssertionError("SSO login must not run")
+
+    session = AttachedSession()
+    _run(session.login())
+
+    assert session.visited == [CANVAS_ORIGIN]
+
+
 def test_expired_password_prompt_uses_sso_change_later(monkeypatch):
     class ExpiredPasswordSession(CdpBrowserSession):
         def __init__(self):

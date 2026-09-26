@@ -4,7 +4,9 @@ import base64
 import contextlib
 import http.server
 import io
+import json
 import threading
+import urllib.request
 import wave
 from pathlib import Path
 from urllib.parse import quote, unquote
@@ -150,6 +152,24 @@ def test_player_intro_clip_does_not_complete_the_lecture():
 
     with serve(routes) as port:
         asyncio.run(scenario(port))
+
+
+def test_attached_session_uses_own_tab_and_leaves_shared_browser_running():
+    def page_count(port):
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/json", timeout=2) as response:
+            return sum(1 for target in json.loads(response.read()) if target.get("type") == "page")
+
+    async def scenario():
+        async with browser() as owner:
+            port = owner.port
+            before = await asyncio.to_thread(page_count, port)
+            options = LiveOptions(timeout_seconds=10, attach_port=port)
+            async with CdpBrowserSession(KuLmsConfig("fixture", "fixture"), options) as attached:
+                assert await attached.evaluate("1 + 1") == 2
+                assert await asyncio.to_thread(page_count, port) == before + 1
+            assert await asyncio.to_thread(page_count, port) == before
+            assert await owner.evaluate("2 + 2") == 4
+    asyncio.run(scenario())
 
 
 def test_native_media_error_is_reported():

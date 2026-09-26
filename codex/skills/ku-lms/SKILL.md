@@ -77,6 +77,14 @@ ku-lms --json --live calendar feed --open-google
 
 Never print the raw calendar `.ics` feed URL. Use `--copy`, `--open`, or `--open-google` only when the user explicitly asks to connect/copy/open the feed.
 
+Reuse one login across several live commands (start once, stop when finished; omit start for a single command):
+
+```bash
+ku-lms --json --live session start
+ku-lms --json session status
+ku-lms --json session stop
+```
+
 Recordings for a course:
 
 ```bash

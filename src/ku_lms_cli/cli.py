@@ -50,6 +50,9 @@ def build_parser() -> argparse.ArgumentParser:
     assignments.add_argument("action", nargs="?", choices=["list", "deadlines", "download"], default="list")
     assignments.add_argument("--id", dest="item_id", default="sample-assignment-file", help="Attachment id for download")
     assignments.add_argument("--course", default="", help="Course name substring for live mode")
+    session = sub.add_parser("session", help="Keep one logged-in browser that later --live commands reuse (POSIX)")
+    session.add_argument("action", choices=["start", "status", "stop"])
+    session.add_argument("--idle-minutes", type=float, default=180, help="Close the session after this long without use")
     recordings = sub.add_parser("recordings", help="List/play/keepalive recorded lectures and extract official captions")
     recordings.add_argument("action", nargs="?", choices=["list", "unwatched", "play", "keepalive", "captions", "status", "stop", "events"], default="list")
     recordings.add_argument("--all", action="store_true", help="Play all accessible recordings in one detached local runner (requires --live and --course)")
@@ -202,6 +205,12 @@ def _first_command(argv: list[str]) -> str | None:
     return None
 
 
+def _login_session_port() -> int | None:
+    from .login_session import session_port
+
+    return session_port()
+
+
 def run(argv: list[str] | None = None, live_provider_factory: Any | None = None) -> int:
     parser = build_parser()
     raw_argv = list(argv or [])
@@ -238,6 +247,18 @@ def run(argv: list[str] | None = None, live_provider_factory: Any | None = None)
                 print(json.dumps(failed, ensure_ascii=False, separators=(",", ":")))
                 return 1
             return _emit({"ok": False, "error": str(exc), "exit_code": 1}, args.json)
+    if args.command == "session":
+        from .login_session import session_query, start_session
+        try:
+            if args.action == "start":
+                if not args.global_live:
+                    raise LiveCommandError("session start requires --live")
+                session = start_session(args.env_file, args.timeout, args.headful, args.idle_minutes * 60)
+            else:
+                session = session_query(args.action) or {"running": False}
+            return _emit({"ok": True, "browser": session}, args.json)
+        except (LiveCommandError, OSError, ValueError) as exc:
+            return _emit({"ok": False, "error": redact_text(str(exc)), "exit_code": 1}, args.json)
     policy = PathPolicy()
     if args.command in {"login", "discover"} or getattr(args, "global_live", False):
         policy.ensure()
@@ -254,18 +275,22 @@ def run(argv: list[str] | None = None, live_provider_factory: Any | None = None)
         result = run_discovery(config, policy, entry_url=args.entry_url, live=args.live, observation_path=args.devtools_observation)
         return _emit(result, args.json)
     live_mode = bool(getattr(args, "global_live", False))
+    try:
+        attach_port = _login_session_port() if live_mode else None
+    except (LiveCommandError, OSError, ValueError) as exc:
+        return _emit({"ok": False, "error": redact_text(str(exc)), "exit_code": 1}, args.json)
     if args.command == "workload":
         if not live_mode:
             return _emit({"ok": False, "error": "workload requires --live", "exit_code": 1}, args.json)
         try:
             request = parse_workload_request(args.as_of, args.lookahead, args.timezone)
-            options = LiveOptions(headless=not args.headful, timeout_seconds=args.timeout)
+            options = LiveOptions(headless=not args.headful, timeout_seconds=args.timeout, attach_port=attach_port)
             workload_provider = live_provider_factory(config, options) if live_provider_factory else LiveWorkloadProvider(config, options)
             return _emit(workload_provider.workload(request), args.json)
         except LiveCommandError as exc:
             return _emit({"ok": False, "error": str(exc), "exit_code": 1}, args.json)
     if live_mode:
-        options = LiveOptions(headless=not args.headful, timeout_seconds=args.timeout)
+        options = LiveOptions(headless=not args.headful, timeout_seconds=args.timeout, attach_port=attach_port)
         provider = live_provider_factory(config, options) if live_provider_factory else LiveLmsProvider(config, options)
     else:
         provider = FixtureProvider()
