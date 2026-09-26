@@ -58,6 +58,12 @@ class MediaPlayer:
             params = event.get("params", {})
             if method in {"Inspector.detached", "Inspector.targetCrashed", "CDP.disconnected"}:
                 fail(LiveCommandError("player browser disconnected"))
+            if method == "Runtime.executionContextCreated" and params.get("context", {}).get("auxData", {}).get("isDefault"):
+                # Cross-site player navigations get a fresh renderer without the page binding.
+                rebind = asyncio.ensure_future(client.send("Runtime.addBinding", {"name": "kuLmsPlayback"}))
+                rebind.add_done_callback(
+                    lambda task: task.cancelled() or task.exception() is None
+                    or fail(LiveCommandError("player event binding failed")))
             if method == "Network.responseReceived":
                 response = params.get("response", {})
                 if response.get("status") in {401, 403} and params.get("type") in {"Document", "XHR", "Fetch"}:
@@ -128,7 +134,7 @@ _PLAYER_SCRIPT = r"""
   if (window !== window.top) return;
   const generation = __GENERATION__;
   let selected = null, launched = false;
-  const clicked = new WeakSet();
+  const clickedAt = new WeakMap();
   const send = (event, v, trusted = false) => window.kuLmsPlayback(JSON.stringify({
     generation, event, trusted, position: v ? v.currentTime : 0,
     paused: v ? v.paused : true, ended: v ? v.ended : false,
@@ -143,10 +149,11 @@ _PLAYER_SCRIPT = r"""
     v.playbackRate = 1;
     v.play().catch(() => send('error', v));
   };
+  const playerAsset = v => /\/uniplayer\//.test(v.currentSrc || v.getAttribute('src') || '');
   for (const name of ['playing', 'timeupdate', 'pause', 'ended', 'error', 'ratechange']) {
     document.addEventListener(name, e => {
       const v = e.target;
-      if (!choose(v) || !e.isTrusted) return;
+      if (!choose(v) || !e.isTrusted || playerAsset(v)) return;
       selected = v;
       send(name, v, e.isTrusted);
     }, true);
@@ -162,8 +169,8 @@ _PLAYER_SCRIPT = r"""
       if (video) start(video);
     }
     for (const button of document.querySelectorAll('.vc-front-screen-play-btn, .vc-front-mixed-play-btn, .vc-front-multi-play-btn, .confirm-ok-btn')) {
-      if (!clicked.has(button) && button.getBoundingClientRect().width > 0) {
-        clicked.add(button); button.click();
+      if (button.getBoundingClientRect().width > 0 && Date.now() - (clickedAt.get(button) || 0) > 2000) {
+        clickedAt.set(button, Date.now()); button.click();
       }
     }
     if (selected || launched) return;
@@ -177,6 +184,7 @@ _PLAYER_SCRIPT = r"""
     if (frame) { launched = true; location.assign(frame.src); }
   };
   new MutationObserver(inspect).observe(document, {childList: true, subtree: true});
+  setInterval(inspect, 1000);
   document.addEventListener('DOMContentLoaded', inspect, {once: true});
 })();
 """

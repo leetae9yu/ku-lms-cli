@@ -7,11 +7,13 @@ browser session and are never part of CLI payloads.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import html
 import json
 import os
 import re
 import shutil
+import signal
 import socket
 import subprocess
 import tempfile
@@ -706,7 +708,9 @@ class CdpBrowserSession:
             if self.options.headless:
                 args.extend(["--headless=new", "--autoplay-policy=no-user-gesture-required"])
             args.append("about:blank")
-            self._proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, text=True)
+            self._proc = subprocess.Popen(
+                args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, text=True, start_new_session=True
+            )
             ws_url = await asyncio.to_thread(_wait_for_page_ws, port, self.options.timeout_seconds)
             self._client = await _CdpClient.connect(ws_url)
             await self._client.send("Page.enable")
@@ -732,6 +736,9 @@ class CdpBrowserSession:
             except subprocess.TimeoutExpired:
                 self._proc.kill()
                 self._proc.wait(timeout=5)
+            # Chrome helpers (network service, crashpad) outlive the browser and keep writing the profile.
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(self._proc.pid, signal.SIGKILL)
         if self._tmp:
             self._tmp.cleanup()
 

@@ -1,10 +1,13 @@
 """Independent, local-only Chromium fixtures through the production CDP surface."""
 import asyncio
 import base64
+import contextlib
+import http.server
 import io
+import threading
 import wave
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 import pytest
 
@@ -14,16 +17,46 @@ from ku_lms_cli.live import CdpBrowserSession, LiveOptions
 from ku_lms_cli.media import MediaPlayer
 
 
-def video_page(extra="", video_attributes=""):
+def wav_bytes(frames=4000):
     audio = io.BytesIO()
     with wave.open(audio, "wb") as output:
         output.setnchannels(1)
         output.setsampwidth(2)
         output.setframerate(8000)
-        output.writeframes(b"\0\0" * 4000)
-    source = "data:audio/wav;base64," + base64.b64encode(audio.getvalue()).decode()
+        output.writeframes(b"\0\0" * frames)
+    return audio.getvalue()
+
+
+def video_page(extra="", video_attributes=""):
+    source = "data:audio/wav;base64," + base64.b64encode(wav_bytes()).decode()
     html = f'<html><body>{extra}<video {video_attributes} src="{source}"></video></body></html>'
     return "data:text/html," + quote(html)
+
+
+@contextlib.contextmanager
+def serve(routes):
+    """Serve path -> (content type, body) from 127.0.0.1; bodies may use {port}."""
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            content_type, body = routes[self.path]
+            payload = body.replace("{port}", str(port)).encode() if isinstance(body, str) else body
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, format, *args):
+            return None
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        yield port
+    finally:
+        server.shutdown()
+        server.server_close()
 
 
 def browser():
@@ -63,6 +96,60 @@ def test_native_pause_does_not_finish_and_resume_ends_at_normal_speed():
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
     asyncio.run(scenario())
+
+
+def test_play_button_is_clicked_again_after_player_becomes_ready():
+    async def scenario():
+        async with browser() as session:
+            lecture = video_page()
+            source = lecture.split('src%3D%22', 1)[1].split('%22', 1)[0]
+            button = (
+                '<div class="vc-front-screen-play-btn" style="width:40px;height:40px"></div>'
+                "<script>setTimeout(() => { const b = document.querySelector('.vc-front-screen-play-btn');"
+                " b.onclick = () => { b.style.display = 'none'; const v = document.createElement('video');"
+                f" v.src = decodeURIComponent('{source}'); document.body.appendChild(v); }}; }}, 1500);</script>"
+            )
+            url = "data:text/html," + quote(f"<html><body>{button}</body></html>")
+            assert await asyncio.wait_for(MediaPlayer(session).play(url, lambda *_: None), 10) is True
+    asyncio.run(scenario())
+
+
+def test_player_events_survive_cross_site_navigation():
+    routes = {
+        "/start": ("text/html", "<script>location.assign('http://localhost:{port}/lecture')</script>"),
+        "/lecture": ("text/html", unquote(video_page().split(",", 1)[1])),
+    }
+
+    async def scenario(port):
+        async with browser() as session:
+            url = f"http://127.0.0.1:{port}/start"
+            assert await asyncio.wait_for(MediaPlayer(session).play(url, lambda *_: None), 10) is True
+
+    with serve(routes) as port:
+        asyncio.run(scenario(port))
+
+
+def test_player_intro_clip_does_not_complete_the_lecture():
+    page = (
+        '<video src="/viewer/uniplayer/intro.wav" '
+        "onended=\"if (this.src.includes('intro')) { this.src = '/media/screen.wav'; this.play(); }\"></video>"
+    )
+    routes = {
+        "/": ("text/html", f"<html><body>{page}</body></html>"),
+        "/viewer/uniplayer/intro.wav": ("audio/wav", wav_bytes(2000)),
+        "/media/screen.wav": ("audio/wav", wav_bytes(12000)),
+    }
+
+    async def scenario(port):
+        async with browser() as session:
+            positions = []
+            url = f"http://127.0.0.1:{port}/"
+            player = MediaPlayer(session).play(url, lambda position, _paused: positions.append(position))
+            assert await asyncio.wait_for(player, 10) is True
+            assert max(positions) == pytest.approx(1.5)
+
+    with serve(routes) as port:
+        asyncio.run(scenario(port))
 
 
 def test_native_media_error_is_reported():
