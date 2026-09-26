@@ -771,7 +771,10 @@ class CdpBrowserSession:
                 await asyncio.sleep(1.0)
                 continue
             if isinstance(state, dict) and state.get("hasPassword"):
-                await self._submit_credentials()
+                if self._take_password_change_prompt():
+                    await self._postpone_password_change()
+                else:
+                    await self._submit_credentials()
                 await asyncio.sleep(5.0)
             else:
                 await self._click_login_candidate()
@@ -1050,6 +1053,24 @@ class CdpBrowserSession:
             """
         )
 
+    def _take_password_change_prompt(self) -> bool:
+        client = self._require_client()
+        message, client.last_dialog_message = client.last_dialog_message, ""
+        return bool(re.search(r"password|비밀번호", message, re.I) and re.search(r"chang|reset|변경", message, re.I))
+
+    async def _postpone_password_change(self) -> None:
+        result = await self.evaluate(
+            """
+            (() => {
+              if (typeof window.changePwdLater !== 'function') return 'missing';
+              setTimeout(() => window.changePwdLater(), 0);
+              return 'postponed';
+            })()
+            """
+        )
+        if result != "postponed":
+            raise LiveCommandError("SSO requires a password change and offers no change-later option")
+
     async def _click_login_candidate(self) -> None:
         await self.evaluate(
             """
@@ -1131,6 +1152,7 @@ class _CdpClient:
         self.websocket = websocket
         self._next_id = 1
         self.event_callback: Any | None = None
+        self.last_dialog_message = ""
         self._pending: dict[int, asyncio.Future[Any]] = {}
         self.connected = True
         self._reader = asyncio.create_task(self._receive())
@@ -1154,6 +1176,7 @@ class _CdpClient:
                     else:
                         future.set_result(message.get("result", {}))
                 if message.get("method") == "Page.javascriptDialogOpening":
+                    self.last_dialog_message = str(message.get("params", {}).get("message", ""))
                     msg_id = self._next_id
                     self._next_id += 1
                     await self.websocket.send(json.dumps({"id": msg_id, "method": "Page.handleJavaScriptDialog", "params": {"accept": True}}))

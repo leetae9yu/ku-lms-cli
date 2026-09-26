@@ -2,7 +2,7 @@ import pytest
 
 from ku_lms_cli.config import KuLmsConfig
 from ku_lms_cli.discovery import DEFAULT_ENTRY_URL
-from ku_lms_cli.live import CANVAS_ORIGIN, CdpBrowserSession, LiveCommandError, LiveLmsProvider, LiveOptions, _remaining_candidate, _run
+from ku_lms_cli.live import CANVAS_ORIGIN, CdpBrowserSession, LiveCommandError, LiveLmsProvider, LiveOptions, _CdpClient, _remaining_candidate, _run
 
 
 class FakeSession:
@@ -153,6 +153,48 @@ def test_login_success_query_is_not_treated_as_a_login_page():
             return None
 
     _run(ReadySession().login())
+
+
+def test_expired_password_prompt_uses_sso_change_later(monkeypatch):
+    class ExpiredPasswordSession(CdpBrowserSession):
+        def __init__(self):
+            super().__init__(
+                KuLmsConfig(user_id="student-id", password="secret-pwd"),
+                LiveOptions(timeout_seconds=5),
+            )
+            self.client = _CdpClient.__new__(_CdpClient)
+            self.client.last_dialog_message = ""
+            self._client = self.client
+            self.actions = []
+
+        async def goto(self, url):
+            return None
+
+        async def evaluate(self, expression, *, timeout=None):
+            if "changePwdLater" in expression:
+                self.actions.append("change_later")
+                return "postponed"
+            if "change_later" in self.actions:
+                return {"href": "https://mylms.korea.ac.kr/", "hasPassword": False}
+            return {"href": "https://sso.korea.ac.kr/Login.eps", "hasPassword": True}
+
+        async def _submit_credentials(self):
+            self.actions.append("submit")
+            self.client.last_dialog_message = (
+                "You have not changed your password in a long time. Please log in after resetting your password."
+            )
+
+        async def _canvas_session_ready(self):
+            return True
+
+    async def no_wait(_seconds):
+        return None
+
+    monkeypatch.setattr("ku_lms_cli.live.asyncio.sleep", no_wait)
+    session = ExpiredPasswordSession()
+    _run(session.login())
+
+    assert session.actions == ["submit", "change_later"]
 
 
 def test_live_courses_are_public_name_shape_only():
