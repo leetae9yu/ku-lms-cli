@@ -59,6 +59,13 @@ def test_recording_playback_plan_documents_side_effects(tmp_path, capsys):
     assert data["playback"]["side_effects_accepted"] is True
     assert data["playback"]["keepalive"] is True
 
+
+def test_recordings_unwatched_fixture_shape(tmp_path, capsys):
+    code = run(["--env-file", str(write_env(tmp_path)), "--json", "recordings", "unwatched"])
+    data = parse_json_output(capsys)
+    assert code == 0
+    assert set(data["unwatched"][0]) == {"course", "week", "lesson", "title", "attendance_status", "available", "due_at"}
+
 class FakeLiveProvider:
     def __init__(self):
         self.options = None

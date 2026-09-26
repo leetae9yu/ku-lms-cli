@@ -35,6 +35,7 @@ from .redaction import redact_data, redact_text
 
 CANVAS_ORIGIN = "https://mylms.korea.ac.kr"
 CANVAS_HOSTS = frozenset({"canvas.korea.ac.kr", "mylms.korea.ac.kr"})
+ATTENDANCE_TOOL_ID = 2  # LearningX "출결현황" course tab
 
 
 @dataclass(frozen=True)
@@ -59,6 +60,8 @@ class BrowserSession(Protocol):
     async def play_url(self, url: str, *, until_end: bool = False, seconds: float | None = None) -> dict[str, Any]: ...
 
     async def extract_captions(self, url: str) -> list[dict[str, Any]]: ...
+
+    async def fetch_attendance(self, course_id: Any) -> dict[str, Any]: ...
 
 
 class LiveLmsProvider:
@@ -105,6 +108,9 @@ class LiveLmsProvider:
 
     def recording_captions(self, course: str, title: str = "") -> dict[str, Any]:
         return _run(self._recording_captions_async(course, title))
+
+    def unwatched_recordings(self, course: str = "") -> list[dict[str, Any]]:
+        return _run(self._unwatched_recordings_async(course))
 
     async def _courses_async(self) -> list[dict[str, Any]]:
         async with self._session_factory() as session:
@@ -181,6 +187,15 @@ class LiveLmsProvider:
             opened = webbrowser.open(google_url)
             return {"delivery": "open_google", "copied": False, "opened": bool(opened), "url_shape": url_shape, "raw_url_printed": False}
         return {"delivery": "inspect", "copied": False, "opened": False, "url_shape": url_shape, "raw_url_printed": False}
+
+    async def _unwatched_recordings_async(self, course_query: str) -> list[dict[str, Any]]:
+        async with self._session_factory() as session:
+            await session.login()
+            courses = [await _select_course(session, course_query)] if course_query else await _fetch_courses(session)
+            rows: list[dict[str, Any]] = []
+            for course in courses:
+                rows.extend(_unwatched_rows(course, await session.fetch_attendance(course["id"])))
+        return sorted(rows, key=lambda row: (row["due_at"] or "~", row["course"], row["week"] or 0, row["lesson"] or 0))
 
     async def _recordings_async(self, course_query: str) -> list[dict[str, Any]]:
         async with self._session_factory() as session:
@@ -386,6 +401,31 @@ def _public_todo_item(item: dict[str, Any]) -> dict[str, Any]:
         "course": item.get("context_name") or "",
         "ignore": bool(item.get("ignore", False)),
     }
+
+
+WATCHED_ATTENDANCE_STATUSES = frozenset({"attendance", "late", "excused"})
+
+
+def _unwatched_rows(course: dict[str, Any], attendance: dict[str, Any]) -> list[dict[str, Any]]:
+    items = (attendance.get("attendance_items") or {}).get("attendance_items") or []
+    summaries = (attendance.get("summary") or {}).get("attendance_summaries") or {}
+    rows = []
+    for item in items:
+        if item.get("item_content_type") != "commons" or not item.get("use_attendance"):
+            continue
+        status = (summaries.get(str(item.get("item_id"))) or {}).get("attendance_status") or "none"
+        if status in WATCHED_ATTENDANCE_STATUSES:
+            continue
+        rows.append({
+            "course": str(course.get("name", "")),
+            "week": item.get("week_position"),
+            "lesson": item.get("lesson_position"),
+            "title": str(item.get("title") or ""),
+            "attendance_status": status,
+            "available": item.get("lecture_period_status") != "not_open",
+            "due_at": item.get("due_at"),
+        })
+    return rows
 
 
 def _public_recording(item: dict[str, Any]) -> dict[str, Any]:
@@ -851,6 +891,57 @@ class CdpBrowserSession:
             """
         )
         return str(feed_url or "")
+
+    async def fetch_attendance(self, course_id: Any) -> dict[str, Any]:
+        """Read the course attendance tab's own LearningX responses; direct cross-course fetches are rejected."""
+        client = self._require_client()
+        prefix = f"/learningx/api/v1/courses/{course_id}/"
+        wanted = {prefix + "attendance_items": "attendance_items", prefix + "attendance_items/summary": "summary"}
+        requests: dict[str, str] = {}
+        result: dict[str, Any] = {}
+        loaded = asyncio.get_running_loop().create_future()
+        previous = client.event_callback
+
+        async def read(request_id: str, key: str) -> None:
+            try:
+                body = await client.send("Network.getResponseBody", {"requestId": request_id})
+            except LiveCommandError:
+                return  # The tab reloads once; bodies of the discarded document are gone and it refetches.
+            try:
+                result[key] = json.loads(body.get("body") or "null")
+            except json.JSONDecodeError:
+                if not loaded.done():
+                    loaded.set_exception(LiveCommandError("attendance API returned an unexpected shape"))
+                return
+            if len(result) == len(wanted) and not loaded.done():
+                loaded.set_result(None)
+
+        readers: list[asyncio.Task[None]] = []
+
+        def on_event(event: dict[str, Any]) -> None:
+            if previous:
+                previous(event)
+            params = event.get("params") or {}
+            if event.get("method") == "Network.responseReceived":
+                key = wanted.get(urllib.parse.urlparse(str((params.get("response") or {}).get("url", ""))).path)
+                if key:
+                    requests[str(params.get("requestId"))] = key
+            elif event.get("method") == "Network.loadingFinished" and params.get("requestId") in requests:
+                request_id = str(params["requestId"])
+                readers.append(asyncio.ensure_future(read(request_id, requests.pop(request_id))))
+
+        client.event_callback = on_event
+        try:
+            await self.goto(f"{CANVAS_ORIGIN}/courses/{course_id}/external_tools/{ATTENDANCE_TOOL_ID}")
+            await self._open_external_tool_content()
+            await asyncio.wait_for(loaded, self.options.timeout_seconds)
+        except asyncio.TimeoutError as exc:
+            raise LiveCommandError("attendance status did not load before timeout") from exc
+        finally:
+            client.event_callback = previous
+            for reader in readers:
+                reader.cancel()
+        return result
 
     async def _canvas_session_ready(self) -> bool:
         try:

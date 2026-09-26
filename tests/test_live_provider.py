@@ -88,6 +88,29 @@ class FakeSession:
     async def get_calendar_feed_url(self):
         return "https://mylms.korea.ac.kr/feeds/calendars/" + "user_abc123TOKEN.ics"
 
+    async def fetch_attendance(self, course_id):
+        if course_id != 101:
+            return {"attendance_items": {"attendance_items": []}, "summary": {"attendance_summaries": {}}}
+        video = {"item_content_type": "commons", "use_attendance": True, "lecture_period_status": "open"}
+        return {
+            "attendance_items": {"attendance_items": [
+                {**video, "item_id": 1, "week_position": 4, "lesson_position": 2, "title": "4-2", "due_at": "2026-09-28T14:59:59Z"},
+                {**video, "item_id": 2, "week_position": 4, "lesson_position": 1, "title": "4-1", "due_at": "2026-09-28T14:59:59Z"},
+                {**video, "item_id": 3, "week_position": 1, "lesson_position": 1, "title": "1-1", "due_at": "2026-09-06T14:59:59Z"},
+                {**video, "item_id": 4, "week_position": 2, "lesson_position": 1, "title": "2-1", "due_at": "2026-09-13T14:59:59Z"},
+                {**video, "item_id": 5, "week_position": 5, "lesson_position": 1, "title": "5-1",
+                 "lecture_period_status": "not_open", "due_at": "2026-10-04T14:59:59Z"},
+                {**video, "item_id": 6, "week_position": None, "lesson_position": None, "title": "보충", "use_attendance": False},
+                {"item_id": 7, "item_content_type": "smart_attendance", "use_attendance": True, "title": "09/09", "week_position": 2},
+            ]},
+            "summary": {"attendance_summaries": {
+                "1": {"attendance_status": "none"},
+                "3": {"attendance_status": "late"},
+                "4": {"attendance_status": "attendance"},
+                "7": {"attendance_status": "absent"},
+            }},
+        }
+
     async def play_url(self, url, *, until_end=False, seconds=None):
         self.played_urls.append(url)
         return {
@@ -195,6 +218,22 @@ def test_expired_password_prompt_uses_sso_change_later(monkeypatch):
     _run(session.login())
 
     assert session.actions == ["submit", "change_later"]
+
+
+def test_unwatched_recordings_are_unattended_tracked_videos_by_due_date():
+    lms, fake = provider()
+    rows = lms.unwatched_recordings()
+
+    assert fake.logged_in
+    assert [(row["title"], row["attendance_status"], row["available"]) for row in rows] == [
+        ("4-1", "none", True),
+        ("4-2", "none", True),
+        ("5-1", "none", False),
+    ]
+    assert rows[0] == {
+        "course": "국제법", "week": 4, "lesson": 1, "title": "4-1",
+        "attendance_status": "none", "available": True, "due_at": "2026-09-28T14:59:59Z",
+    }
 
 
 def test_live_courses_are_public_name_shape_only():

@@ -51,7 +51,7 @@ def build_parser() -> argparse.ArgumentParser:
     assignments.add_argument("--id", dest="item_id", default="sample-assignment-file", help="Attachment id for download")
     assignments.add_argument("--course", default="", help="Course name substring for live mode")
     recordings = sub.add_parser("recordings", help="List/play/keepalive recorded lectures and extract official captions")
-    recordings.add_argument("action", nargs="?", choices=["list", "play", "keepalive", "captions", "status", "stop", "events"], default="list")
+    recordings.add_argument("action", nargs="?", choices=["list", "unwatched", "play", "keepalive", "captions", "status", "stop", "events"], default="list")
     recordings.add_argument("--all", action="store_true", help="Play all accessible recordings in one detached local runner (requires --live and --course)")
     recordings.add_argument("--id", dest="item_id", default="sample-recording", help="Recording id for play/keepalive")
     recordings.add_argument("--course", default="", help="Course name substring for live mode")
@@ -310,6 +310,8 @@ def run(argv: list[str] | None = None, live_provider_factory: Any | None = None)
             try:
                 if args.action == "list":
                     return _emit({"ok": True, "recordings": provider.recordings(args.course)}, args.json)
+                if args.action == "unwatched":
+                    return _emit({"ok": True, "unwatched": provider.unwatched_recordings(args.course)}, args.json)
                 if args.action == "captions":
                     captions = provider.recording_captions(args.course, args.title)
                     return _emit({"ok": True, "captions": _caption_payload_with_txt_output(captions, args.output, policy)}, args.json)
@@ -326,6 +328,8 @@ def run(argv: list[str] | None = None, live_provider_factory: Any | None = None)
                 return _emit({"ok": False, "error": "recording not found", "id": args.item_id, "exit_code": 1}, args.json)
             except LiveCommandError as exc:
                 return _emit({"ok": False, "error": str(exc), "exit_code": 1}, args.json)
+        if args.action == "unwatched":
+            return _emit({"ok": True, "unwatched": provider.unwatched_recordings()}, args.json)
         if args.action in {"play", "keepalive"}:
             try:
                 plan = provider.playback_plan(args.item_id, keepalive=args.action == "keepalive")

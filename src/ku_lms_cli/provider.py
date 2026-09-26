@@ -66,6 +66,20 @@ class FixtureProvider:
     def recordings(self) -> list[Recording]:
         return [Recording(**item) for item in self._data.get("recordings", [])]
 
+    def unwatched_recordings(self) -> list[dict[str, object]]:
+        return [
+            {
+                "course": "Sample Course",
+                "week": 1,
+                "lesson": 1,
+                "title": recording.title,
+                "attendance_status": "none",
+                "available": True,
+                "due_at": "2099-12-31T23:59:00+09:00",
+            }
+            for recording in self.recordings()
+        ]
+
     def calendar_events(self) -> list[CalendarEvent]:
         return [CalendarEvent(**item) for item in self._data.get("calendar_events", [])]
 

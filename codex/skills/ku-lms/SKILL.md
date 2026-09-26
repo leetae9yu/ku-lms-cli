@@ -83,6 +83,12 @@ Recordings for a course:
 ku-lms --json --live recordings list --course "국제법"
 ```
 
+Recordings not yet watched (attendance-tracked videos without 출석/지각/공결; `available: false` means not yet open; omit `--course` for all courses):
+
+```bash
+ku-lms --json --live recordings unwatched
+```
+
 Play a recording:
 
 ```bash
